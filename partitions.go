@@ -221,7 +221,7 @@ func (ps *PartitionSpec) LastAssignedFieldID() int {
 //     have the result field and it may be null.
 //
 // There is a case where we can guarantee that a partition field in the first
-// and only parittion spec that uses a required source column will never be
+// and only partition spec that uses a required source column will never be
 // null, but it doesn't seem worth tracking this case.
 func (ps *PartitionSpec) PartitionType(schema *Schema) *StructType {
 	nestedFields := []NestedField{}
