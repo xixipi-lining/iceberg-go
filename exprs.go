@@ -214,7 +214,7 @@ func newAnd(left, right BooleanExpression) BooleanExpression {
 
 // NewAnd will construct a new AndExpr, allowing the caller to provide potentially
 // more than just two arguments which will be folded to create an appropriate expression
-// tree. i.e. NewAnd(a, b, c, d) becomes AndExpr(a, AndExpr(b, AndExpr(c, d)))
+// tree. i.e. NewAnd(a, b, c, d) becomes AndExpr(AndExpr(AndExpr(a, b), c), d)
 //
 // Slight optimizations are performed on creation if either argument is AlwaysFalse
 // or AlwaysTrue by performing reductions. If any argument is AlwaysFalse, then everything
@@ -275,7 +275,7 @@ func newOr(left, right BooleanExpression) BooleanExpression {
 
 // NewOr will construct a new OrExpr, allowing the caller to provide potentially
 // more than just two arguments which will be folded to create an appropriate expression
-// tree. i.e. NewOr(a, b, c, d) becomes OrExpr(a, OrExpr(b, OrExpr(c, d)))
+// tree. i.e. NewOr(a, b, c, d) becomes OrExpr(OrExpr(OrExpr(a, b), c), d)
 //
 // Slight optimizations are performed on creation if either argument is AlwaysFalse
 // or AlwaysTrue by performing reductions. If any argument is AlwaysTrue, then everything
