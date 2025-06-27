@@ -497,7 +497,8 @@ func (sp *snapshotProducer) newManifestOutput() (io.WriteCloser, string, error) 
 	if err != nil {
 		return nil, "", err
 	}
-	fname := newManifestFileName(int(sp.manifestCount.Add(1)), sp.commitUuid)
+	fname := newManifestFileName(int(sp.manifestCount.Load()), sp.commitUuid)
+	sp.manifestCount.Add(1)
 	filepath := provider.NewMetadataLocation(fname)
 	f, err := sp.io.Create(filepath)
 	if err != nil {
