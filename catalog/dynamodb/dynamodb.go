@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
+	"maps"
 	"strings"
 	"time"
 	_ "unsafe"
@@ -123,6 +125,8 @@ func (m *dynamodbIcebergNamespace) UnmarshalMap(avMap map[string]types.Attribute
 type dynamodbIcebergTable struct {
 	TableNamespace           string
 	TableName                string
+	CreatedAt                time.Time
+	UpdatedAt                time.Time
 	MetadataLocation         string
 	PreviousMetadataLocation string
 }
@@ -157,6 +161,17 @@ func (m *dynamodbIcebergTable) UnmarshalMap(avMap map[string]types.AttributeValu
 	m.TableName = model.Identifier[len(prefix):]
 	m.MetadataLocation = model.MetadataLocation
 	m.PreviousMetadataLocation = model.PreviousMetadataLocation
+
+	if err := m.Valid(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (m *dynamodbIcebergTable) Valid() error {
+	if m.TableName == "" || m.TableNamespace == "" || m.CreatedAt.IsZero() {
+		return fmt.Errorf("invalid table: %+v", m)
+	}
 	return nil
 }
 
@@ -167,14 +182,14 @@ type dynamodbAPI interface {
 	UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
 	PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
 	DeleteItem(ctx context.Context, params *dynamodb.DeleteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error)
+	TransactWriteItems(ctx context.Context, params *dynamodb.TransactWriteItemsInput, optFns ...func(*dynamodb.Options)) (*dynamodb.TransactWriteItemsOutput, error)
+	Query(ctx context.Context, params *dynamodb.QueryInput, optFns ...func(*dynamodb.Options)) (*dynamodb.QueryOutput, error)
 }
 
 type Catalog struct {
-	name           string
-	tableName      string
-	dynamodb       dynamodbAPI
-	props          iceberg.Properties
-	dynamodbClient *dynamodb.Client
+	tableName string
+	dynamodb  dynamodbAPI
+	props     iceberg.Properties
 }
 
 func NewCatalog(tableName string, dynamodb dynamodbAPI) (*Catalog, error) {
@@ -247,18 +262,22 @@ func (c *Catalog) CreateNamespace(ctx context.Context, namespace table.Identifie
 		return err
 	}
 
-	current_time := time.Now()
 	ns := dynamodbIcebergNamespace{
 		Namespace:  strings.Join(namespace, "."),
-		CreatedAt:  current_time,
-		UpdatedAt:  current_time,
+		CreatedAt:  time.Now(),
+		UpdatedAt:  time.Now(),
 		Properties: props,
 	}
 	item, err := ns.MarshalMap()
 	if err != nil {
 		return fmt.Errorf("failed to marshal item: %w", err)
 	}
-	expr, err := expression.NewBuilder().WithCondition(expression.AttributeNotExists(expression.Name(dynamodbColumnNamespace))).Build()
+	expr, err := expression.NewBuilder().WithCondition(
+		expression.And(
+			expression.AttributeNotExists(expression.Name(dynamodbColumnIdentifier)),
+			expression.AttributeNotExists(expression.Name(dynamodbColumnNamespace)),
+		),
+	).Build()
 	if err != nil {
 		return fmt.Errorf("failed to build expression: %w", err)
 	}
@@ -289,7 +308,12 @@ func (c *Catalog) DropNamespace(ctx context.Context, namespace table.Identifier)
 		Namespace: strings.Join(namespace, "."),
 	}
 
-	expr, err := expression.NewBuilder().WithCondition(expression.AttributeExists(expression.Name(dynamodbColumnNamespace))).Build()
+	expr, err := expression.NewBuilder().WithCondition(
+		expression.And(
+			expression.AttributeExists(expression.Name(dynamodbColumnIdentifier)),
+			expression.AttributeExists(expression.Name(dynamodbColumnNamespace)),
+		),
+	).Build()
 	if err != nil {
 		return fmt.Errorf("failed to build expression: %w", err)
 	}
@@ -312,12 +336,13 @@ func (c *Catalog) DropNamespace(ctx context.Context, namespace table.Identifier)
 }
 
 func (c *Catalog) CheckNamespaceExists(ctx context.Context, namespace table.Identifier) (bool, error) {
-	ns := dynamodbIcebergNamespace{
-		Namespace: strings.Join(namespace, "."),
-	}
+	return c.namespaceExists(ctx, strings.Join(namespace, "."))
+}
+
+func (c *Catalog) namespaceExists(ctx context.Context, ns string) (bool, error) {
 	res, err := c.dynamodb.GetItem(ctx, &dynamodb.GetItemInput{
 		TableName: aws.String(c.tableName),
-		Key:       ns.Key(),
+		Key:       (&dynamodbIcebergNamespace{Namespace: ns}).Key(),
 	})
 	if err != nil {
 		return false, err
@@ -335,8 +360,9 @@ func (c *Catalog) LoadNamespaceProperties(ctx context.Context, namespace table.I
 	}
 
 	res, err := c.dynamodb.GetItem(ctx, &dynamodb.GetItemInput{
-		TableName: aws.String(c.tableName),
-		Key:       ns.Key(),
+		TableName:      aws.String(c.tableName),
+		Key:            ns.Key(),
+		ConsistentRead: aws.Bool(true),
 	})
 	if err != nil {
 		return nil, err
@@ -373,6 +399,8 @@ func (c *Catalog) UpdateNamespaceProperties(ctx context.Context, namespace table
 
 	expr, err := expression.NewBuilder().WithUpdate(
 		expression.Set(expression.Name("properties"), expression.Value(updatedProperties)),
+	).WithUpdate(
+		expression.Set(expression.Name("updated_at"), expression.Value(time.Now())),
 	).Build()
 	if err != nil {
 		return catalog.PropertiesUpdateSummary{}, fmt.Errorf("failed to build expression: %w", err)
@@ -392,6 +420,44 @@ func (c *Catalog) UpdateNamespaceProperties(ctx context.Context, namespace table
 	return propertiesUpdateSummary, nil
 }
 
+func (c *Catalog) ListNamespaces(ctx context.Context, parent table.Identifier) ([]table.Identifier, error) {
+	expr, err := expression.NewBuilder().WithKeyCondition(
+		expression.KeyAnd(
+			expression.Key(dynamodbColumnIdentifier).Equal(expression.Value(dynamodbNamespace)),
+			expression.Key(dynamodbColumnNamespace).BeginsWith(strings.Join(parent, ".")+"."),
+		),
+	).Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build expression: %w", err)
+	}
+
+	paginator := dynamodb.NewQueryPaginator(c.dynamodb, &dynamodb.QueryInput{
+		TableName:                 aws.String(c.tableName),
+		ConsistentRead:            aws.Bool(true),
+		KeyConditionExpression:    expr.KeyCondition(),
+		ExpressionAttributeNames:  expr.Names(),
+		ExpressionAttributeValues: expr.Values(),
+	})
+
+	namespaces := make([]table.Identifier, 0)
+	for paginator.HasMorePages() {
+		res, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query namespaces: %w", err)
+		}
+
+		for _, item := range res.Items {
+			ns := dynamodbIcebergNamespace{}
+			if err := ns.UnmarshalMap(item); err != nil {
+				return nil, fmt.Errorf("failed to unmarshal namespace: %w", err)
+			}
+			namespaces = append(namespaces, table.Identifier(strings.Split(ns.Namespace, ".")))
+		}
+	}
+
+	return namespaces, nil
+}
+
 func (c *Catalog) CreateTable(ctx context.Context, identifier table.Identifier, schema *iceberg.Schema, opts ...catalog.CreateTableOpt) (*table.Table, error) {
 	staged, err := internal.CreateStagedTable(ctx, c.props, c.LoadNamespaceProperties, identifier, schema, opts...)
 	if err != nil {
@@ -401,7 +467,7 @@ func (c *Catalog) CreateTable(ctx context.Context, identifier table.Identifier, 
 	nsIdent := catalog.NamespaceFromIdent(identifier)
 	tblIdent := catalog.TableNameFromIdent(identifier)
 	ns := strings.Join(nsIdent, ".")
-	exists, err := c.CheckNamespaceExists(ctx, nsIdent)
+	exists, err := c.namespaceExists(ctx, ns)
 	if err != nil {
 		return nil, err
 	}
@@ -424,10 +490,11 @@ func (c *Catalog) CreateTable(ctx context.Context, identifier table.Identifier, 
 	}
 
 	tbl := dynamodbIcebergTable{
-		TableNamespace:           ns,
-		TableName:                tblIdent,
-		MetadataLocation:         staged.MetadataLocation(),
-		PreviousMetadataLocation: staged.MetadataLocation(),
+		TableNamespace:   ns,
+		TableName:        tblIdent,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+		MetadataLocation: staged.MetadataLocation(),
 	}
 
 	item, err := tbl.MarshalMap()
@@ -435,7 +502,12 @@ func (c *Catalog) CreateTable(ctx context.Context, identifier table.Identifier, 
 		return nil, fmt.Errorf("failed to marshal table: %w", err)
 	}
 
-	expr, err := expression.NewBuilder().WithCondition(expression.AttributeNotExists(expression.Name(dynamodbColumnIdentifier))).Build()
+	expr, err := expression.NewBuilder().WithCondition(
+		expression.And(
+			expression.AttributeNotExists(expression.Name(dynamodbColumnIdentifier)),
+			expression.AttributeNotExists(expression.Name(dynamodbColumnNamespace)),
+		),
+	).Build()
 	if err != nil {
 		return nil, fmt.Errorf("failed to build expression: %w", err)
 	}
@@ -458,7 +530,322 @@ func (c *Catalog) CreateTable(ctx context.Context, identifier table.Identifier, 
 	return c.LoadTable(ctx, identifier, staged.Properties())
 }
 
+func (c *Catalog) getTable(ctx context.Context, identifier table.Identifier) (*dynamodbIcebergTable, error) {
+	nsIdent := catalog.NamespaceFromIdent(identifier)
+	tblIdent := catalog.TableNameFromIdent(identifier)
+
+	tbl := dynamodbIcebergTable{
+		TableNamespace: strings.Join(nsIdent, "."),
+		TableName:      tblIdent,
+	}
+
+	res, err := c.dynamodb.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName:      aws.String(c.tableName),
+		Key:            tbl.Key(),
+		ConsistentRead: aws.Bool(true),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if res.Item == nil {
+		return nil, fmt.Errorf("%w: %s", catalog.ErrNoSuchTable, identifier)
+	}
+
+	if err := tbl.UnmarshalMap(res.Item); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal table: %w", err)
+	}
+
+	return &tbl, nil
+}
+
 func (c *Catalog) LoadTable(ctx context.Context, identifier table.Identifier, props iceberg.Properties) (*table.Table, error) {
-	// todo: implement
-	return nil, nil
+	if props == nil {
+		props = iceberg.Properties{}
+	}
+
+	tbl, err := c.getTable(ctx, identifier)
+	if err != nil {
+		return nil, err
+	}
+
+	tblProps := maps.Clone(c.props)
+	maps.Copy(props, tblProps)
+
+	return table.NewFromLocation(ctx, identifier, tbl.MetadataLocation, io.LoadFSFunc(tblProps, tbl.MetadataLocation), c)
+}
+
+func (c *Catalog) CommitTable(ctx context.Context, tbl *table.Table, requirements []table.Requirement, updates []table.Update) (table.Metadata, string, error) {
+	nsIdent := catalog.NamespaceFromIdent(tbl.Identifier())
+	tblIdent := catalog.TableNameFromIdent(tbl.Identifier())
+
+	current, err := c.LoadTable(ctx, tbl.Identifier(), nil)
+	if err != nil && !errors.Is(err, catalog.ErrNoSuchTable) {
+		return nil, "", err
+	}
+
+	staged, err := internal.UpdateAndStageTable(ctx, tbl, tbl.Identifier(), requirements, updates, c)
+	if err != nil {
+		return nil, "", err
+	}
+	if current != nil && staged.Metadata().Equals(current.Metadata()) {
+		return current.Metadata(), current.MetadataLocation(), nil
+	}
+
+	if err := internal.WriteMetadata(ctx, staged.Metadata(), staged.MetadataLocation(), staged.Properties()); err != nil {
+		return nil, "", err
+	}
+
+	expr, err := expression.NewBuilder().WithCondition(
+		expression.Equal(expression.Name("metadata_location"), expression.Value(current.MetadataLocation())),
+	).WithUpdate(
+		expression.Set(expression.Name("metadata_location"), expression.Value(staged.MetadataLocation())),
+	).WithUpdate(
+		expression.Set(expression.Name("previous_metadata_location"), expression.Value(current.MetadataLocation())),
+	).WithUpdate(
+		expression.Set(expression.Name("updated_at"), expression.Value(time.Now())),
+	).Build()
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to build expression: %w", err)
+	}
+
+	_, err = c.dynamodb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(c.tableName),
+		Key: (&dynamodbIcebergTable{
+			TableNamespace: strings.Join(nsIdent, "."),
+			TableName:      tblIdent,
+		}).Key(),
+		ConditionExpression:       expr.Condition(),
+		UpdateExpression:          expr.Update(),
+		ExpressionAttributeNames:  expr.Names(),
+		ExpressionAttributeValues: expr.Values(),
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to update table: %w", err)
+	}
+
+	return staged.Metadata(), staged.MetadataLocation(), nil
+}
+
+func (c *Catalog) DropTable(ctx context.Context, identifier table.Identifier) error {
+	nsIdent := catalog.NamespaceFromIdent(identifier)
+	tblIdent := catalog.TableNameFromIdent(identifier)
+
+	expr, err := expression.NewBuilder().WithCondition(
+		expression.And(
+			expression.AttributeExists(expression.Name(dynamodbColumnIdentifier)),
+			expression.AttributeExists(expression.Name(dynamodbColumnNamespace)),
+		),
+	).Build()
+	if err != nil {
+		return fmt.Errorf("failed to build expression: %w", err)
+	}
+
+	_, err = c.dynamodb.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName: aws.String(c.tableName),
+		Key: (&dynamodbIcebergTable{
+			TableNamespace: strings.Join(nsIdent, "."),
+			TableName:      tblIdent,
+		}).Key(),
+		ConditionExpression:       expr.Condition(),
+		ExpressionAttributeNames:  expr.Names(),
+		ExpressionAttributeValues: expr.Values(),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to delete table: %w", err)
+	}
+
+	return nil
+}
+
+func (c *Catalog) RegisterTable(ctx context.Context, identifier table.Identifier, metadataLocation string) (*table.Table, error) {
+	nsIdent := catalog.NamespaceFromIdent(identifier)
+	tblIdent := catalog.TableNameFromIdent(identifier)
+
+	exists, err := c.namespaceExists(ctx, strings.Join(nsIdent, "."))
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", catalog.ErrNoSuchNamespace, nsIdent)
+	}
+
+	metadata, err := table.NewFromLocation(ctx,
+		identifier,
+		metadataLocation,
+		io.LoadFSFunc(nil, metadataLocation),
+		c,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to load table metadata from %s: %w", metadataLocation, err)
+	}
+
+	tbl := dynamodbIcebergTable{
+		TableNamespace:   strings.Join(nsIdent, "."),
+		TableName:        tblIdent,
+		CreatedAt:        time.Now(),
+		UpdatedAt:        time.Now(),
+		MetadataLocation: metadataLocation,
+	}
+
+	item, err := tbl.MarshalMap()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal table: %w", err)
+	}
+
+	expr, err := expression.NewBuilder().WithCondition(
+		expression.And(
+			expression.AttributeNotExists(expression.Name(dynamodbColumnIdentifier)),
+			expression.AttributeNotExists(expression.Name(dynamodbColumnNamespace)),
+		),
+	).Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build expression: %w", err)
+	}
+	_, err = c.dynamodb.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:                 aws.String(c.tableName),
+		Item:                      item,
+		ConditionExpression:       expr.Condition(),
+		ExpressionAttributeNames:  expr.Names(),
+		ExpressionAttributeValues: expr.Values(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to register table: %w", err)
+	}
+
+	return c.LoadTable(ctx, identifier, metadata.Properties())
+}
+
+func (c *Catalog) RenameTable(ctx context.Context, from, to table.Identifier) (*table.Table, error) {
+	toNSIdent := catalog.NamespaceFromIdent(to)
+	toTblIdent := catalog.TableNameFromIdent(to)
+
+	exists, err := c.namespaceExists(ctx, strings.Join(toNSIdent, "."))
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", catalog.ErrNoSuchNamespace, toNSIdent)
+	}
+
+	fromTbl, err := c.getTable(ctx, from)
+	if err != nil {
+		return nil, err
+	}
+
+	toTbl := dynamodbIcebergTable{
+		TableNamespace:           strings.Join(toNSIdent, "."),
+		TableName:                toTblIdent,
+		MetadataLocation:         fromTbl.MetadataLocation,
+		PreviousMetadataLocation: fromTbl.PreviousMetadataLocation,
+		CreatedAt:                fromTbl.CreatedAt,
+		UpdatedAt:                time.Now(),
+	}
+	item, err := toTbl.MarshalMap()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal table: %w", err)
+	}
+
+	putExpr, err := expression.NewBuilder().WithCondition(
+		expression.And(
+			expression.AttributeNotExists(expression.Name(dynamodbColumnIdentifier)),
+			expression.AttributeNotExists(expression.Name(dynamodbColumnNamespace)),
+		),
+	).Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build expression: %w", err)
+	}
+
+	delExpr, err := expression.NewBuilder().WithCondition(
+		expression.And(
+			expression.AttributeExists(expression.Name(dynamodbColumnIdentifier)),
+			expression.AttributeExists(expression.Name(dynamodbColumnNamespace)),
+		),
+	).Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build expression: %w", err)
+	}
+
+	_, err = c.dynamodb.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: []types.TransactWriteItem{
+			{
+				Put: &types.Put{
+					TableName:                 aws.String(c.tableName),
+					Item:                      item,
+					ConditionExpression:       putExpr.Condition(),
+					ExpressionAttributeNames:  putExpr.Names(),
+					ExpressionAttributeValues: putExpr.Values(),
+				},
+			},
+			{
+				Delete: &types.Delete{
+					TableName:                 aws.String(c.tableName),
+					Key:                       fromTbl.Key(),
+					ConditionExpression:       delExpr.Condition(),
+					ExpressionAttributeNames:  delExpr.Names(),
+					ExpressionAttributeValues: delExpr.Values(),
+				},
+			},
+		},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to rename table: %w", err)
+	}
+
+	return c.LoadTable(ctx, to, nil)
+}
+
+func (c *Catalog) CheckTableExists(ctx context.Context, identifier table.Identifier) (bool, error) {
+	_, err := c.getTable(ctx, identifier)
+	if err != nil {
+		if errors.Is(err, catalog.ErrNoSuchTable) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (c *Catalog) ListTables(ctx context.Context, namespace table.Identifier) iter.Seq2[table.Identifier, error] {
+	return func(yield func(table.Identifier, error) bool) {
+		expr, err := expression.NewBuilder().WithKeyCondition(
+			expression.Key(dynamodbColumnNamespace).Equal(expression.Value(strings.Join(namespace, "."))),
+		).Build()
+		if err != nil {
+			yield(table.Identifier{}, fmt.Errorf("failed to build expression: %w", err))
+			return
+		}
+
+		paginator := dynamodb.NewQueryPaginator(c.dynamodb, &dynamodb.QueryInput{
+			TableName:                 aws.String(c.tableName),
+			ConsistentRead:            aws.Bool(true),
+			IndexName:                 aws.String(dynamodbNamespaceGSI),
+			KeyConditionExpression:    expr.KeyCondition(),
+			ExpressionAttributeNames:  expr.Names(),
+			ExpressionAttributeValues: expr.Values(),
+		})
+
+		for paginator.HasMorePages() {
+			res, err := paginator.NextPage(ctx)
+			if err != nil {
+				yield(table.Identifier{}, fmt.Errorf("failed to query tables: %w", err))
+				return
+			}
+
+			for _, item := range res.Items {
+				tbl := &dynamodbIcebergTable{}
+				if err := tbl.UnmarshalMap(item); err != nil {
+					yield(table.Identifier{}, fmt.Errorf("failed to unmarshal table: %w", err))
+					return
+				}
+
+				if tbl.TableName == dynamodbNamespace {
+					continue
+				}
+
+				if !yield(table.Identifier(append(strings.Split(tbl.TableNamespace, "."), tbl.TableName)), nil) {
+					return
+				}
+			}
+		}
+	}
 }
