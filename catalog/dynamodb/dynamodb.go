@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	_ "unsafe"
 
 	"github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
@@ -93,7 +94,7 @@ type dynamodbIcebergNamespace struct {
 func (m *dynamodbIcebergNamespace) Key() map[string]types.AttributeValue {
 	return map[string]types.AttributeValue{
 		dynamodbColumnIdentifier: &types.AttributeValueMemberS{Value: dynamodbNamespace},
-		dynamodbColumnNamespace: &types.AttributeValueMemberS{Value: m.Namespace},
+		dynamodbColumnNamespace:  &types.AttributeValueMemberS{Value: m.Namespace},
 	}
 }
 
@@ -131,7 +132,7 @@ type dynamodbIcebergTable struct {
 func (m *dynamodbIcebergTable) Key() map[string]types.AttributeValue {
 	return map[string]types.AttributeValue{
 		dynamodbColumnIdentifier: &types.AttributeValueMemberS{Value: m.TableNamespace + "." + m.TableName},
-		dynamodbColumnNamespace: &types.AttributeValueMemberS{Value: m.TableNamespace},
+		dynamodbColumnNamespace:  &types.AttributeValueMemberS{Value: m.TableNamespace},
 	}
 }
 
@@ -164,6 +165,10 @@ func (m *dynamodbIcebergTable) UnmarshalMap(avMap map[string]types.AttributeValu
 type dynamodbAPI interface {
 	DescribeTable(ctx context.Context, params *dynamodb.DescribeTableInput, optFns ...func(*dynamodb.Options)) (*dynamodb.DescribeTableOutput, error)
 	CreateTable(ctx context.Context, params *dynamodb.CreateTableInput, optFns ...func(*dynamodb.Options)) (*dynamodb.CreateTableOutput, error)
+	GetItem(ctx context.Context, params *dynamodb.GetItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
+	UpdateItem(ctx context.Context, params *dynamodb.UpdateItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.UpdateItemOutput, error)
+	PutItem(ctx context.Context, params *dynamodb.PutItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
+	DeleteItem(ctx context.Context, params *dynamodb.DeleteItemInput, optFns ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error)
 }
 
 type Catalog struct {
@@ -257,7 +262,7 @@ func (c *Catalog) CreateNamespace(ctx context.Context, namespace table.Identifie
 	if err != nil {
 		return fmt.Errorf("failed to build expression: %w", err)
 	}
-	_, err = c.dynamodbClient.PutItem(ctx, &dynamodb.PutItemInput{
+	_, err = c.dynamodb.PutItem(ctx, &dynamodb.PutItemInput{
 		TableName:                 aws.String(c.tableName),
 		Item:                      item,
 		ConditionExpression:       expr.Condition(),
@@ -288,11 +293,11 @@ func (c *Catalog) DropNamespace(ctx context.Context, namespace table.Identifier)
 	if err != nil {
 		return fmt.Errorf("failed to build expression: %w", err)
 	}
-	_, err = c.dynamodbClient.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-		TableName: aws.String(c.tableName),
-		Key: ns.Key(),
-		ConditionExpression: expr.Condition(),
-		ExpressionAttributeNames: expr.Names(),
+	_, err = c.dynamodb.DeleteItem(ctx, &dynamodb.DeleteItemInput{
+		TableName:                 aws.String(c.tableName),
+		Key:                       ns.Key(),
+		ConditionExpression:       expr.Condition(),
+		ExpressionAttributeNames:  expr.Names(),
 		ExpressionAttributeValues: expr.Values(),
 	})
 	if err != nil {
@@ -307,24 +312,86 @@ func (c *Catalog) DropNamespace(ctx context.Context, namespace table.Identifier)
 }
 
 func (c *Catalog) CheckNamespaceExists(ctx context.Context, namespace table.Identifier) (bool, error) {
-	return c.namespaceExists(ctx, strings.Join(namespace, "."))
+	ns := dynamodbIcebergNamespace{
+		Namespace: strings.Join(namespace, "."),
+	}
+	res, err := c.dynamodb.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(c.tableName),
+		Key:       ns.Key(),
+	})
+	if err != nil {
+		return false, err
+	}
+
+	if res.Item == nil {
+		return false, nil
+	}
+	return true, nil
 }
 
-func (c *Catalog) namespaceExists(ctx context.Context, ns string) (bool, error) {
-	// todo: implement
-	return false, nil
+func (c *Catalog) LoadNamespaceProperties(ctx context.Context, namespace table.Identifier) (iceberg.Properties, error) {
+	ns := dynamodbIcebergNamespace{
+		Namespace: strings.Join(namespace, "."),
+	}
+
+	res, err := c.dynamodb.GetItem(ctx, &dynamodb.GetItemInput{
+		TableName: aws.String(c.tableName),
+		Key:       ns.Key(),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if res.Item == nil {
+		return nil, catalog.ErrNoSuchNamespace
+	}
+
+	if err := ns.UnmarshalMap(res.Item); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal namespace: %w", err)
+	}
+
+	return ns.Properties, nil
 }
 
-func(c *Catalog) LoadNamespaceProperties(ctx context.Context, namespace table.Identifier) (iceberg.Properties, error) {
-	// todo: implement
-	return nil, nil	
-}
+//go:linkname getUpdatedPropsAndUpdateSummary github.com/apache/iceberg-go/catalog.getUpdatedPropsAndUpdateSummary
+func getUpdatedPropsAndUpdateSummary(currentProps iceberg.Properties, removals []string, updates iceberg.Properties) (iceberg.Properties, catalog.PropertiesUpdateSummary, error)
+
 
 func (c *Catalog) UpdateNamespaceProperties(ctx context.Context, namespace table.Identifier, removals []string, updates iceberg.Properties) (catalog.PropertiesUpdateSummary, error) {
-	// todo: implement
-	return catalog.PropertiesUpdateSummary{}, nil
-}
 
+	properties, err := c.LoadNamespaceProperties(ctx, namespace)
+	if err != nil {
+		return catalog.PropertiesUpdateSummary{}, err
+	}
+
+	updatedProperties, propertiesUpdateSummary, err := getUpdatedPropsAndUpdateSummary(properties, removals, updates)
+	if err != nil {
+		return catalog.PropertiesUpdateSummary{}, err
+	}
+
+	ns := dynamodbIcebergNamespace{
+		Namespace: strings.Join(namespace, "."),
+	}
+
+	expr, err := expression.NewBuilder().WithUpdate(
+		expression.Set(expression.Name("properties"), expression.Value(updatedProperties)),
+	).Build()
+	if err != nil {
+		return catalog.PropertiesUpdateSummary{}, fmt.Errorf("failed to build expression: %w", err)
+	}
+
+	_, err = c.dynamodb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName: aws.String(c.tableName),
+		Key: ns.Key(),
+		UpdateExpression: expr.Update(),
+		ExpressionAttributeNames: expr.Names(),
+		ExpressionAttributeValues: expr.Values(),
+	})
+	if err != nil {
+		return catalog.PropertiesUpdateSummary{}, fmt.Errorf("failed to update namespace properties: %w", err)
+	}
+
+	return propertiesUpdateSummary, nil
+}
 
 func (c *Catalog) CreateTable(ctx context.Context, identifier table.Identifier, schema *iceberg.Schema, opts ...catalog.CreateTableOpt) (*table.Table, error) {
 	// todo: implement
