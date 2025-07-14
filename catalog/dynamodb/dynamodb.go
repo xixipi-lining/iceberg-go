@@ -25,6 +25,11 @@ import (
 const (
 	dynamodbColumnIdentifier = "identifier"
 	dynamodbColumnNamespace  = "namespace"
+	dynamodbColumnCreatedAt  = "created_at"
+	dynamodbColumnUpdatedAt  = "updated_at"
+	dynamodbColumnMetadataLocation = "metadata_location"
+	dynamodbColumnPreviousMetadataLocation = "previous_metadata_location"
+	dynamodbColumnProperties = "properties"
 
 	dynamodbNamespace = "NAMESPACE"
 
@@ -142,6 +147,8 @@ func (m *dynamodbIcebergTable) MarshalMap() (map[string]types.AttributeValue, er
 	return attributevalue.MarshalMap(dynamodbModel{
 		Identifier:               m.TableNamespace + "." + m.TableName,
 		Namespace:                m.TableNamespace,
+		CreatedAt:                m.CreatedAt,
+		UpdatedAt:                m.UpdatedAt,
 		MetadataLocation:         m.MetadataLocation,
 		PreviousMetadataLocation: m.PreviousMetadataLocation,
 	})
@@ -161,6 +168,8 @@ func (m *dynamodbIcebergTable) UnmarshalMap(avMap map[string]types.AttributeValu
 	m.TableName = model.Identifier[len(prefix):]
 	m.MetadataLocation = model.MetadataLocation
 	m.PreviousMetadataLocation = model.PreviousMetadataLocation
+	m.CreatedAt = model.CreatedAt
+	m.UpdatedAt = model.UpdatedAt
 
 	if err := m.Valid(); err != nil {
 		return err
@@ -398,9 +407,9 @@ func (c *Catalog) UpdateNamespaceProperties(ctx context.Context, namespace table
 	}
 
 	expr, err := expression.NewBuilder().WithUpdate(
-		expression.Set(expression.Name("properties"), expression.Value(updatedProperties)),
+		expression.Set(expression.Name(dynamodbColumnProperties), expression.Value(updatedProperties)),
 	).WithUpdate(
-		expression.Set(expression.Name("updated_at"), expression.Value(time.Now())),
+		expression.Set(expression.Name(dynamodbColumnUpdatedAt), expression.Value(time.Now())),
 	).Build()
 	if err != nil {
 		return catalog.PropertiesUpdateSummary{}, fmt.Errorf("failed to build expression: %w", err)
@@ -596,13 +605,13 @@ func (c *Catalog) CommitTable(ctx context.Context, tbl *table.Table, requirement
 	}
 
 	expr, err := expression.NewBuilder().WithCondition(
-		expression.Equal(expression.Name("metadata_location"), expression.Value(current.MetadataLocation())),
+		expression.Equal(expression.Name(dynamodbColumnMetadataLocation), expression.Value(current.MetadataLocation())),
 	).WithUpdate(
-		expression.Set(expression.Name("metadata_location"), expression.Value(staged.MetadataLocation())),
+		expression.Set(expression.Name(dynamodbColumnMetadataLocation), expression.Value(staged.MetadataLocation())),
 	).WithUpdate(
-		expression.Set(expression.Name("previous_metadata_location"), expression.Value(current.MetadataLocation())),
+		expression.Set(expression.Name(dynamodbColumnPreviousMetadataLocation), expression.Value(current.MetadataLocation())),
 	).WithUpdate(
-		expression.Set(expression.Name("updated_at"), expression.Value(time.Now())),
+		expression.Set(expression.Name(dynamodbColumnUpdatedAt), expression.Value(time.Now())),
 	).Build()
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to build expression: %w", err)
