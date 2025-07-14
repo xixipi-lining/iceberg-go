@@ -10,6 +10,8 @@ import (
 
 	"github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
+	"github.com/apache/iceberg-go/catalog/internal"
+	"github.com/apache/iceberg-go/io"
 	"github.com/apache/iceberg-go/table"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue"
@@ -25,10 +27,6 @@ const (
 	dynamodbNamespace = "NAMESPACE"
 
 	dynamodbNamespaceGSI = "namespace-identifier"
-)
-
-var (
-	dynamodbItemNotFound = errors.New("item not found")
 )
 
 var (
@@ -172,8 +170,10 @@ type dynamodbAPI interface {
 }
 
 type Catalog struct {
+	name           string
 	tableName      string
 	dynamodb       dynamodbAPI
+	props          iceberg.Properties
 	dynamodbClient *dynamodb.Client
 }
 
@@ -355,7 +355,6 @@ func (c *Catalog) LoadNamespaceProperties(ctx context.Context, namespace table.I
 //go:linkname getUpdatedPropsAndUpdateSummary github.com/apache/iceberg-go/catalog.getUpdatedPropsAndUpdateSummary
 func getUpdatedPropsAndUpdateSummary(currentProps iceberg.Properties, removals []string, updates iceberg.Properties) (iceberg.Properties, catalog.PropertiesUpdateSummary, error)
 
-
 func (c *Catalog) UpdateNamespaceProperties(ctx context.Context, namespace table.Identifier, removals []string, updates iceberg.Properties) (catalog.PropertiesUpdateSummary, error) {
 
 	properties, err := c.LoadNamespaceProperties(ctx, namespace)
@@ -380,10 +379,10 @@ func (c *Catalog) UpdateNamespaceProperties(ctx context.Context, namespace table
 	}
 
 	_, err = c.dynamodb.UpdateItem(ctx, &dynamodb.UpdateItemInput{
-		TableName: aws.String(c.tableName),
-		Key: ns.Key(),
-		UpdateExpression: expr.Update(),
-		ExpressionAttributeNames: expr.Names(),
+		TableName:                 aws.String(c.tableName),
+		Key:                       ns.Key(),
+		UpdateExpression:          expr.Update(),
+		ExpressionAttributeNames:  expr.Names(),
 		ExpressionAttributeValues: expr.Values(),
 	})
 	if err != nil {
@@ -394,6 +393,72 @@ func (c *Catalog) UpdateNamespaceProperties(ctx context.Context, namespace table
 }
 
 func (c *Catalog) CreateTable(ctx context.Context, identifier table.Identifier, schema *iceberg.Schema, opts ...catalog.CreateTableOpt) (*table.Table, error) {
+	staged, err := internal.CreateStagedTable(ctx, c.props, c.LoadNamespaceProperties, identifier, schema, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	nsIdent := catalog.NamespaceFromIdent(identifier)
+	tblIdent := catalog.TableNameFromIdent(identifier)
+	ns := strings.Join(nsIdent, ".")
+	exists, err := c.CheckNamespaceExists(ctx, nsIdent)
+	if err != nil {
+		return nil, err
+	}
+
+	if !exists {
+		return nil, fmt.Errorf("%w: %s", catalog.ErrNoSuchNamespace, ns)
+	}
+
+	afs, err := staged.FS(ctx)
+	if err != nil {
+		return nil, err
+	}
+	wfs, ok := afs.(io.WriteFileIO)
+	if !ok {
+		return nil, errors.New("loaded filesystem IO does not support writing")
+	}
+
+	if err := internal.WriteTableMetadata(staged.Metadata(), wfs, staged.MetadataLocation()); err != nil {
+		return nil, err
+	}
+
+	tbl := dynamodbIcebergTable{
+		TableNamespace:           ns,
+		TableName:                tblIdent,
+		MetadataLocation:         staged.MetadataLocation(),
+		PreviousMetadataLocation: staged.MetadataLocation(),
+	}
+
+	item, err := tbl.MarshalMap()
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal table: %w", err)
+	}
+
+	expr, err := expression.NewBuilder().WithCondition(expression.AttributeNotExists(expression.Name(dynamodbColumnIdentifier))).Build()
+	if err != nil {
+		return nil, fmt.Errorf("failed to build expression: %w", err)
+	}
+
+	_, err = c.dynamodb.PutItem(ctx, &dynamodb.PutItemInput{
+		TableName:                 aws.String(c.tableName),
+		Item:                      item,
+		ConditionExpression:       expr.Condition(),
+		ExpressionAttributeNames:  expr.Names(),
+		ExpressionAttributeValues: expr.Values(),
+	})
+	if err != nil {
+		var conditionalCheckFailedException *types.ConditionalCheckFailedException
+		if errors.As(err, &conditionalCheckFailedException) {
+			return nil, fmt.Errorf("%w: %s", catalog.ErrTableAlreadyExists, identifier)
+		}
+		return nil, fmt.Errorf("failed to create table: %w", err)
+	}
+
+	return c.LoadTable(ctx, identifier, staged.Properties())
+}
+
+func (c *Catalog) LoadTable(ctx context.Context, identifier table.Identifier, props iceberg.Properties) (*table.Table, error) {
 	// todo: implement
 	return nil, nil
 }
