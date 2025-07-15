@@ -23,13 +23,13 @@ import (
 )
 
 const (
-	dynamodbColumnIdentifier = "identifier"
-	dynamodbColumnNamespace  = "namespace"
-	dynamodbColumnCreatedAt  = "created_at"
-	dynamodbColumnUpdatedAt  = "updated_at"
-	dynamodbColumnMetadataLocation = "metadata_location"
+	dynamodbColumnIdentifier               = "identifier"
+	dynamodbColumnNamespace                = "namespace"
+	dynamodbColumnCreatedAt                = "created_at"
+	dynamodbColumnUpdatedAt                = "updated_at"
+	dynamodbColumnMetadataLocation         = "metadata_location"
 	dynamodbColumnPreviousMetadataLocation = "previous_metadata_location"
-	dynamodbColumnProperties = "properties"
+	dynamodbColumnProperties               = "properties"
 
 	dynamodbNamespace = "NAMESPACE"
 

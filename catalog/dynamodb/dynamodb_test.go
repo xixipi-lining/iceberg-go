@@ -80,14 +80,9 @@ func (m *mockDynamoDBAPI) Query(ctx context.Context, params *dynamodb.QueryInput
 	return args.Get(0).(*dynamodb.QueryOutput), args.Error(1)
 }
 
-var testSchema = iceberg.NewSchemaWithIdentifiers(0, []int{},
-	iceberg.NestedField{ID: 1, Name: "foo", Type: iceberg.PrimitiveTypes.String},
-	iceberg.NestedField{ID: 2, Name: "bar", Type: iceberg.PrimitiveTypes.Int32, Required: true},
-	iceberg.NestedField{ID: 3, Name: "baz", Type: iceberg.PrimitiveTypes.Bool})
-
 func TestDynamoDBCatalogNewCatalog(t *testing.T) {
 	assert := require.New(t)
-	
+
 	mockDDB := &mockDynamoDBAPI{}
 	mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DescribeTableOutput{
@@ -96,7 +91,7 @@ func TestDynamoDBCatalogNewCatalog(t *testing.T) {
 				TableStatus: types.TableStatusActive,
 			},
 		}, nil)
-	
+
 	cat, err := NewCatalog("test-table", mockDDB)
 	assert.NoError(err)
 	assert.NotNil(cat)
@@ -105,14 +100,14 @@ func TestDynamoDBCatalogNewCatalog(t *testing.T) {
 
 func TestDynamoDBCatalogNewCatalogTableNotExists(t *testing.T) {
 	assert := require.New(t)
-	
+
 	mockDDB := &mockDynamoDBAPI{}
 	mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DescribeTableOutput{}, &types.ResourceNotFoundException{})
-	
+
 	mockDDB.On("CreateTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.CreateTableOutput{}, nil)
-	
+
 	// Mock the waiter
 	mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DescribeTableOutput{
@@ -121,7 +116,7 @@ func TestDynamoDBCatalogNewCatalogTableNotExists(t *testing.T) {
 				TableStatus: types.TableStatusActive,
 			},
 		}, nil)
-	
+
 	cat, err := NewCatalog("test-table", mockDDB)
 	assert.NoError(err)
 	assert.NotNil(cat)
@@ -129,7 +124,7 @@ func TestDynamoDBCatalogNewCatalogTableNotExists(t *testing.T) {
 
 func TestDynamoDBCreateNamespace(t *testing.T) {
 	assert := require.New(t)
-	
+
 	mockDDB := &mockDynamoDBAPI{}
 	mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DescribeTableOutput{
@@ -138,27 +133,27 @@ func TestDynamoDBCreateNamespace(t *testing.T) {
 				TableStatus: types.TableStatusActive,
 			},
 		}, nil)
-	
+
 	mockDDB.On("PutItem", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.PutItemOutput{}, nil)
-	
+
 	cat, err := NewCatalog("test-table", mockDDB)
 	assert.NoError(err)
-	
+
 	props := iceberg.Properties{
 		"comment":  "Test namespace",
 		"location": "s3://test-bucket/test-namespace",
 	}
-	
+
 	err = cat.CreateNamespace(context.Background(), table.Identifier{"test_namespace"}, props)
 	assert.NoError(err)
-	
+
 	mockDDB.AssertExpectations(t)
 }
 
 func TestDynamoDBCreateNamespaceAlreadyExists(t *testing.T) {
 	assert := require.New(t)
-	
+
 	mockDDB := &mockDynamoDBAPI{}
 	mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DescribeTableOutput{
@@ -167,13 +162,13 @@ func TestDynamoDBCreateNamespaceAlreadyExists(t *testing.T) {
 				TableStatus: types.TableStatusActive,
 			},
 		}, nil)
-	
+
 	mockDDB.On("PutItem", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.PutItemOutput{}, &types.ConditionalCheckFailedException{})
-	
+
 	cat, err := NewCatalog("test-table", mockDDB)
 	assert.NoError(err)
-	
+
 	err = cat.CreateNamespace(context.Background(), table.Identifier{"test_namespace"}, nil)
 	assert.Error(err)
 	assert.ErrorIs(err, catalog.ErrNamespaceAlreadyExists)
@@ -181,7 +176,7 @@ func TestDynamoDBCreateNamespaceAlreadyExists(t *testing.T) {
 
 func TestDynamoDBDropNamespace(t *testing.T) {
 	assert := require.New(t)
-	
+
 	mockDDB := &mockDynamoDBAPI{}
 	mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DescribeTableOutput{
@@ -190,22 +185,22 @@ func TestDynamoDBDropNamespace(t *testing.T) {
 				TableStatus: types.TableStatusActive,
 			},
 		}, nil)
-	
+
 	mockDDB.On("DeleteItem", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DeleteItemOutput{}, nil)
-	
+
 	cat, err := NewCatalog("test-table", mockDDB)
 	assert.NoError(err)
-	
+
 	err = cat.DropNamespace(context.Background(), table.Identifier{"test_namespace"})
 	assert.NoError(err)
-	
+
 	mockDDB.AssertExpectations(t)
 }
 
 func TestDynamoDBDropNamespaceNotExists(t *testing.T) {
 	assert := require.New(t)
-	
+
 	mockDDB := &mockDynamoDBAPI{}
 	mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DescribeTableOutput{
@@ -214,13 +209,13 @@ func TestDynamoDBDropNamespaceNotExists(t *testing.T) {
 				TableStatus: types.TableStatusActive,
 			},
 		}, nil)
-	
+
 	mockDDB.On("DeleteItem", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DeleteItemOutput{}, &types.ConditionalCheckFailedException{})
-	
+
 	cat, err := NewCatalog("test-table", mockDDB)
 	assert.NoError(err)
-	
+
 	err = cat.DropNamespace(context.Background(), table.Identifier{"nonexistent_namespace"})
 	assert.Error(err)
 	assert.ErrorIs(err, catalog.ErrNoSuchNamespace)
@@ -228,7 +223,7 @@ func TestDynamoDBDropNamespaceNotExists(t *testing.T) {
 
 func TestDynamoDBCheckNamespaceExists(t *testing.T) {
 	assert := require.New(t)
-	
+
 	mockDDB := &mockDynamoDBAPI{}
 	mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DescribeTableOutput{
@@ -237,7 +232,7 @@ func TestDynamoDBCheckNamespaceExists(t *testing.T) {
 				TableStatus: types.TableStatusActive,
 			},
 		}, nil)
-	
+
 	mockDDB.On("GetItem", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.GetItemOutput{
 			Item: map[string]types.AttributeValue{
@@ -245,10 +240,10 @@ func TestDynamoDBCheckNamespaceExists(t *testing.T) {
 				"namespace":  &types.AttributeValueMemberS{Value: "test_namespace"},
 			},
 		}, nil)
-	
+
 	cat, err := NewCatalog("test-table", mockDDB)
 	assert.NoError(err)
-	
+
 	exists, err := cat.CheckNamespaceExists(context.Background(), table.Identifier{"test_namespace"})
 	assert.NoError(err)
 	assert.True(exists)
@@ -256,7 +251,7 @@ func TestDynamoDBCheckNamespaceExists(t *testing.T) {
 
 func TestDynamoDBCheckNamespaceNotExists(t *testing.T) {
 	assert := require.New(t)
-	
+
 	mockDDB := &mockDynamoDBAPI{}
 	mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DescribeTableOutput{
@@ -265,13 +260,13 @@ func TestDynamoDBCheckNamespaceNotExists(t *testing.T) {
 				TableStatus: types.TableStatusActive,
 			},
 		}, nil)
-	
+
 	mockDDB.On("GetItem", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.GetItemOutput{Item: nil}, nil)
-	
+
 	cat, err := NewCatalog("test-table", mockDDB)
 	assert.NoError(err)
-	
+
 	exists, err := cat.CheckNamespaceExists(context.Background(), table.Identifier{"nonexistent_namespace"})
 	assert.NoError(err)
 	assert.False(exists)
@@ -279,7 +274,7 @@ func TestDynamoDBCheckNamespaceNotExists(t *testing.T) {
 
 func TestDynamoDBLoadNamespaceProperties(t *testing.T) {
 	assert := require.New(t)
-	
+
 	mockDDB := &mockDynamoDBAPI{}
 	mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DescribeTableOutput{
@@ -288,12 +283,12 @@ func TestDynamoDBLoadNamespaceProperties(t *testing.T) {
 				TableStatus: types.TableStatusActive,
 			},
 		}, nil)
-	
+
 	testProps := map[string]string{
 		"comment":  "Test namespace",
 		"location": "s3://test-bucket/test-namespace",
 	}
-	
+
 	mockDDB.On("GetItem", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.GetItemOutput{
 			Item: map[string]types.AttributeValue{
@@ -307,10 +302,10 @@ func TestDynamoDBLoadNamespaceProperties(t *testing.T) {
 				},
 			},
 		}, nil)
-	
+
 	cat, err := NewCatalog("test-table", mockDDB)
 	assert.NoError(err)
-	
+
 	props, err := cat.LoadNamespaceProperties(context.Background(), table.Identifier{"test_namespace"})
 	assert.NoError(err)
 	assert.Equal(iceberg.Properties(testProps), props)
@@ -366,7 +361,7 @@ func TestDynamoDBUpdateNamespaceProperties(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assert := require.New(t)
-			
+
 			mockDDB := &mockDynamoDBAPI{}
 			mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 				&dynamodb.DescribeTableOutput{
@@ -375,13 +370,13 @@ func TestDynamoDBUpdateNamespaceProperties(t *testing.T) {
 						TableStatus: types.TableStatusActive,
 					},
 				}, nil)
-			
+
 			// Mock LoadNamespaceProperties
 			propsAV := make(map[string]types.AttributeValue)
 			for k, v := range tt.initial {
 				propsAV[k] = &types.AttributeValueMemberS{Value: v}
 			}
-			
+
 			mockDDB.On("GetItem", mock.Anything, mock.Anything, mock.Anything).Return(
 				&dynamodb.GetItemOutput{
 					Item: map[string]types.AttributeValue{
@@ -390,15 +385,15 @@ func TestDynamoDBUpdateNamespaceProperties(t *testing.T) {
 						"properties": &types.AttributeValueMemberM{Value: propsAV},
 					},
 				}, nil)
-			
+
 			if !tt.shouldError {
 				mockDDB.On("UpdateItem", mock.Anything, mock.Anything, mock.Anything).Return(
 					&dynamodb.UpdateItemOutput{}, nil)
 			}
-			
+
 			cat, err := NewCatalog("test-table", mockDDB)
 			assert.NoError(err)
-			
+
 			summary, err := cat.UpdateNamespaceProperties(context.Background(), table.Identifier{"test_namespace"}, tt.removals, tt.updates)
 			if tt.shouldError {
 				assert.Error(err)
@@ -414,7 +409,7 @@ func TestDynamoDBUpdateNamespaceProperties(t *testing.T) {
 
 func TestDynamoDBListNamespaces(t *testing.T) {
 	assert := require.New(t)
-	
+
 	mockDDB := &mockDynamoDBAPI{}
 	mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DescribeTableOutput{
@@ -423,7 +418,7 @@ func TestDynamoDBListNamespaces(t *testing.T) {
 				TableStatus: types.TableStatusActive,
 			},
 		}, nil)
-	
+
 	mockDDB.On("Query", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.QueryOutput{
 			Items: []map[string]types.AttributeValue{
@@ -437,10 +432,10 @@ func TestDynamoDBListNamespaces(t *testing.T) {
 				},
 			},
 		}, nil)
-	
+
 	cat, err := NewCatalog("test-table", mockDDB)
 	assert.NoError(err)
-	
+
 	namespaces, err := cat.ListNamespaces(context.Background(), nil)
 	assert.NoError(err)
 	assert.Len(namespaces, 2)
@@ -450,7 +445,7 @@ func TestDynamoDBListNamespaces(t *testing.T) {
 
 func TestDynamoDBCheckTableExists(t *testing.T) {
 	assert := require.New(t)
-	
+
 	mockDDB := &mockDynamoDBAPI{}
 	mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DescribeTableOutput{
@@ -459,7 +454,7 @@ func TestDynamoDBCheckTableExists(t *testing.T) {
 				TableStatus: types.TableStatusActive,
 			},
 		}, nil)
-	
+
 	mockDDB.On("GetItem", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.GetItemOutput{
 			Item: map[string]types.AttributeValue{
@@ -470,10 +465,10 @@ func TestDynamoDBCheckTableExists(t *testing.T) {
 				"updated_at":        &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
 			},
 		}, nil)
-	
+
 	cat, err := NewCatalog("test-table", mockDDB)
 	assert.NoError(err)
-	
+
 	exists, err := cat.CheckTableExists(context.Background(), table.Identifier{"test_namespace", "test_table"})
 	assert.NoError(err)
 	assert.True(exists)
@@ -481,7 +476,7 @@ func TestDynamoDBCheckTableExists(t *testing.T) {
 
 func TestDynamoDBCheckTableNotExists(t *testing.T) {
 	assert := require.New(t)
-	
+
 	mockDDB := &mockDynamoDBAPI{}
 	mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DescribeTableOutput{
@@ -490,13 +485,13 @@ func TestDynamoDBCheckTableNotExists(t *testing.T) {
 				TableStatus: types.TableStatusActive,
 			},
 		}, nil)
-	
+
 	mockDDB.On("GetItem", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.GetItemOutput{Item: nil}, nil)
-	
+
 	cat, err := NewCatalog("test-table", mockDDB)
 	assert.NoError(err)
-	
+
 	exists, err := cat.CheckTableExists(context.Background(), table.Identifier{"test_namespace", "nonexistent_table"})
 	assert.NoError(err)
 	assert.False(exists)
@@ -504,7 +499,7 @@ func TestDynamoDBCheckTableNotExists(t *testing.T) {
 
 func TestDynamoDBDropTable(t *testing.T) {
 	assert := require.New(t)
-	
+
 	mockDDB := &mockDynamoDBAPI{}
 	mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DescribeTableOutput{
@@ -513,22 +508,22 @@ func TestDynamoDBDropTable(t *testing.T) {
 				TableStatus: types.TableStatusActive,
 			},
 		}, nil)
-	
+
 	mockDDB.On("DeleteItem", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DeleteItemOutput{}, nil)
-	
+
 	cat, err := NewCatalog("test-table", mockDDB)
 	assert.NoError(err)
-	
+
 	err = cat.DropTable(context.Background(), table.Identifier{"test_namespace", "test_table"})
 	assert.NoError(err)
-	
+
 	mockDDB.AssertExpectations(t)
 }
 
 func TestDynamoDBListTables(t *testing.T) {
 	assert := require.New(t)
-	
+
 	mockDDB := &mockDynamoDBAPI{}
 	mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DescribeTableOutput{
@@ -537,7 +532,7 @@ func TestDynamoDBListTables(t *testing.T) {
 				TableStatus: types.TableStatusActive,
 			},
 		}, nil)
-	
+
 	mockDDB.On("Query", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.QueryOutput{
 			Items: []map[string]types.AttributeValue{
@@ -557,10 +552,10 @@ func TestDynamoDBListTables(t *testing.T) {
 				},
 			},
 		}, nil)
-	
+
 	cat, err := NewCatalog("test-table", mockDDB)
 	assert.NoError(err)
-	
+
 	var tables []table.Identifier
 	var lastErr error
 	iter := cat.ListTables(context.Background(), table.Identifier{"test_namespace"})
@@ -570,7 +565,7 @@ func TestDynamoDBListTables(t *testing.T) {
 			lastErr = err
 		}
 	}
-	
+
 	assert.NoError(lastErr)
 	assert.Len(tables, 2)
 	assert.Contains(tables, table.Identifier{"test_namespace", "test_table1"})
@@ -579,7 +574,7 @@ func TestDynamoDBListTables(t *testing.T) {
 
 func TestDynamoDBListTablesPagination(t *testing.T) {
 	assert := require.New(t)
-	
+
 	mockDDB := &mockDynamoDBAPI{}
 	mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DescribeTableOutput{
@@ -588,7 +583,7 @@ func TestDynamoDBListTablesPagination(t *testing.T) {
 				TableStatus: types.TableStatusActive,
 			},
 		}, nil)
-	
+
 	// First page
 	mockDDB.On("Query", mock.Anything, mock.MatchedBy(func(input *dynamodb.QueryInput) bool {
 		return input.ExclusiveStartKey == nil
@@ -608,7 +603,7 @@ func TestDynamoDBListTablesPagination(t *testing.T) {
 				"namespace":  &types.AttributeValueMemberS{Value: "test_namespace"},
 			},
 		}, nil).Once()
-	
+
 	// Second page
 	mockDDB.On("Query", mock.Anything, mock.MatchedBy(func(input *dynamodb.QueryInput) bool {
 		return input.ExclusiveStartKey != nil
@@ -624,10 +619,10 @@ func TestDynamoDBListTablesPagination(t *testing.T) {
 				},
 			},
 		}, nil).Once()
-	
+
 	cat, err := NewCatalog("test-table", mockDDB)
 	assert.NoError(err)
-	
+
 	var tables []table.Identifier
 	var lastErr error
 	iter := cat.ListTables(context.Background(), table.Identifier{"test_namespace"})
@@ -637,18 +632,18 @@ func TestDynamoDBListTablesPagination(t *testing.T) {
 			lastErr = err
 		}
 	}
-	
+
 	assert.NoError(lastErr)
 	assert.Len(tables, 2)
 	assert.Contains(tables, table.Identifier{"test_namespace", "test_table1"})
 	assert.Contains(tables, table.Identifier{"test_namespace", "test_table2"})
-	
+
 	mockDDB.AssertExpectations(t)
 }
 
 func TestDynamoDBRenameTable(t *testing.T) {
 	assert := require.New(t)
-	
+
 	mockDDB := &mockDynamoDBAPI{}
 	mockDDB.On("DescribeTable", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.DescribeTableOutput{
@@ -657,7 +652,7 @@ func TestDynamoDBRenameTable(t *testing.T) {
 				TableStatus: types.TableStatusActive,
 			},
 		}, nil)
-	
+
 	// Mock namespace existence check
 	mockDDB.On("GetItem", mock.Anything, mock.MatchedBy(func(input *dynamodb.GetItemInput) bool {
 		key := input.Key
@@ -674,7 +669,7 @@ func TestDynamoDBRenameTable(t *testing.T) {
 				"namespace":  &types.AttributeValueMemberS{Value: "test_namespace"},
 			},
 		}, nil)
-	
+
 	// Mock getTable for source table
 	mockDDB.On("GetItem", mock.Anything, mock.MatchedBy(func(input *dynamodb.GetItemInput) bool {
 		key := input.Key
@@ -694,10 +689,10 @@ func TestDynamoDBRenameTable(t *testing.T) {
 				"updated_at":        &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
 			},
 		}, nil)
-	
+
 	mockDDB.On("TransactWriteItems", mock.Anything, mock.Anything, mock.Anything).Return(
 		&dynamodb.TransactWriteItemsOutput{}, nil)
-	
+
 	// Mock LoadTable for the renamed table
 	mockDDB.On("GetItem", mock.Anything, mock.MatchedBy(func(input *dynamodb.GetItemInput) bool {
 		key := input.Key
@@ -717,24 +712,24 @@ func TestDynamoDBRenameTable(t *testing.T) {
 				"updated_at":        &types.AttributeValueMemberS{Value: time.Now().UTC().Format(time.RFC3339)},
 			},
 		}, nil)
-	
+
 	cat, err := NewCatalog("test-table", mockDDB)
 	assert.NoError(err)
-	
+
 	// Mock the file system for LoadTable
 	cat.props = iceberg.Properties{
 		"warehouse": "file:///tmp/test",
 	}
-	
+
 	// This would normally fail because we can't actually load the table metadata,
 	// but we're testing the DynamoDB operations
-	_, err = cat.RenameTable(context.Background(), 
-		table.Identifier{"test_namespace", "old_table"}, 
+	_, err = cat.RenameTable(context.Background(),
+		table.Identifier{"test_namespace", "old_table"},
 		table.Identifier{"test_namespace", "new_table"})
-	
+
 	// We expect this to fail at the LoadTable step since we don't have real metadata
 	assert.Error(err)
-	
+
 	// Verify the TransactWriteItems was called with correct parameters
 	mockDDB.AssertExpectations(t)
 }
@@ -744,56 +739,56 @@ func TestDynamoDBIntegration(t *testing.T) {
 	if os.Getenv("DYNAMODB_TABLE_NAME") == "" {
 		t.Skip("Skipping integration test: DYNAMODB_TABLE_NAME not set")
 	}
-	
+
 	tableName := os.Getenv("DYNAMODB_TABLE_NAME")
-	
+
 	awsCfg, err := config.LoadDefaultConfig(context.Background())
 	require.NoError(t, err)
-	
+
 	ddbClient := dynamodb.NewFromConfig(awsCfg)
-	
+
 	cat, err := NewCatalog(tableName, ddbClient)
 	require.NoError(t, err)
-	
+
 	ctx := context.Background()
-	
+
 	// Test namespace operations
 	nsName := fmt.Sprintf("test_ns_%d", time.Now().UnixNano())
 	namespace := table.Identifier{nsName}
-	
+
 	// Create namespace
 	err = cat.CreateNamespace(ctx, namespace, iceberg.Properties{
 		"comment": "Test namespace for integration test",
 	})
 	require.NoError(t, err)
-	
+
 	// Check namespace exists
 	exists, err := cat.CheckNamespaceExists(ctx, namespace)
 	require.NoError(t, err)
 	require.True(t, exists)
-	
+
 	// Load namespace properties
 	props, err := cat.LoadNamespaceProperties(ctx, namespace)
 	require.NoError(t, err)
 	require.Equal(t, "Test namespace for integration test", props["comment"])
-	
+
 	// Update namespace properties
-	summary, err := cat.UpdateNamespaceProperties(ctx, namespace, 
-		[]string{"comment"}, 
+	summary, err := cat.UpdateNamespaceProperties(ctx, namespace,
+		[]string{"comment"},
 		iceberg.Properties{"new_prop": "new_value"})
 	require.NoError(t, err)
 	require.Contains(t, summary.Removed, "comment")
 	require.Contains(t, summary.Updated, "new_prop")
-	
+
 	// List namespaces
 	namespaces, err := cat.ListNamespaces(ctx, nil)
 	require.NoError(t, err)
 	require.Contains(t, namespaces, namespace)
-	
+
 	// Clean up
 	err = cat.DropNamespace(ctx, namespace)
 	require.NoError(t, err)
-	
+
 	// Verify namespace is gone
 	exists, err = cat.CheckNamespaceExists(ctx, namespace)
 	require.NoError(t, err)
@@ -815,7 +810,7 @@ func (s *DynamoDBCatalogTestSuite) SetupTest() {
 				TableStatus: types.TableStatusActive,
 			},
 		}, nil)
-	
+
 	var err error
 	s.catalog, err = NewCatalog("test-table", s.mockDDB)
 	s.Require().NoError(err)
@@ -825,7 +820,7 @@ func (s *DynamoDBCatalogTestSuite) TestDynamoDBIcebergNamespaceKey() {
 	ns := &dynamodbIcebergNamespace{
 		Namespace: "test_namespace",
 	}
-	
+
 	key := ns.Key()
 	s.Equal("NAMESPACE", key["identifier"].(*types.AttributeValueMemberS).Value)
 	s.Equal("test_namespace", key["namespace"].(*types.AttributeValueMemberS).Value)
@@ -838,14 +833,14 @@ func (s *DynamoDBCatalogTestSuite) TestDynamoDBIcebergNamespaceMarshalUnmarshal(
 		UpdatedAt:  time.Now().Truncate(time.Second),
 		Properties: map[string]string{"key": "value"},
 	}
-	
+
 	marshaled, err := original.MarshalMap()
 	s.Require().NoError(err)
-	
+
 	unmarshaled := &dynamodbIcebergNamespace{}
 	err = unmarshaled.UnmarshalMap(marshaled)
 	s.Require().NoError(err)
-	
+
 	s.Equal(original.Namespace, unmarshaled.Namespace)
 	s.Equal(original.Properties, unmarshaled.Properties)
 }
@@ -855,7 +850,7 @@ func (s *DynamoDBCatalogTestSuite) TestDynamoDBIcebergTableKey() {
 		TableNamespace: "test_namespace",
 		TableName:      "test_table",
 	}
-	
+
 	key := tbl.Key()
 	s.Equal("test_namespace.test_table", key["identifier"].(*types.AttributeValueMemberS).Value)
 	s.Equal("test_namespace", key["namespace"].(*types.AttributeValueMemberS).Value)
@@ -871,19 +866,19 @@ func (s *DynamoDBCatalogTestSuite) TestDynamoDBIcebergTableMarshalUnmarshal() {
 		MetadataLocation:         "s3://test-bucket/metadata/test.json",
 		PreviousMetadataLocation: "s3://test-bucket/metadata/prev.json",
 	}
-	
+
 	marshaled, err := original.MarshalMap()
 	s.Require().NoError(err)
-	
+
 	unmarshaled := &dynamodbIcebergTable{}
 	err = unmarshaled.UnmarshalMap(marshaled)
 	s.Require().NoError(err)
-	
+
 	s.Equal(original.TableNamespace, unmarshaled.TableNamespace)
 	s.Equal(original.TableName, unmarshaled.TableName)
 	s.Equal(original.MetadataLocation, unmarshaled.MetadataLocation)
 	s.Equal(original.PreviousMetadataLocation, unmarshaled.PreviousMetadataLocation)
-	
+
 	// The CreatedAt and UpdatedAt should be set during UnmarshalMap
 	s.NotZero(unmarshaled.CreatedAt)
 	s.NotZero(unmarshaled.UpdatedAt)
@@ -895,17 +890,17 @@ func (s *DynamoDBCatalogTestSuite) TestDynamoDBIcebergTableValidation() {
 		TableName:      "test_table",
 		CreatedAt:      time.Now(),
 	}
-	
+
 	err := tbl.Valid()
 	s.NoError(err)
-	
+
 	// Test invalid table
 	invalidTbl := &dynamodbIcebergTable{
 		TableNamespace: "",
 		TableName:      "test_table",
 		CreatedAt:      time.Now(),
 	}
-	
+
 	err = invalidTbl.Valid()
 	s.Error(err)
 }
