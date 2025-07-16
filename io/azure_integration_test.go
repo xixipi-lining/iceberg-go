@@ -22,6 +22,7 @@ package io_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/Azure/azure-sdk-for-go/sdk/storage/azblob"
@@ -31,6 +32,7 @@ import (
 	sqlcat "github.com/apache/iceberg-go/catalog/sql"
 	"github.com/apache/iceberg-go/io"
 	"github.com/stretchr/testify/suite"
+	"github.com/testcontainers/testcontainers-go/modules/compose"
 	"github.com/uptrace/bun/driver/sqliteshim"
 	"gocloud.dev/blob/azureblob"
 )
@@ -38,16 +40,47 @@ import (
 const (
 	accountName              = "devstoreaccount1"
 	accountKey               = "Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw=="
-	endpoint                 = "127.0.0.1:11000"
 	protocol                 = "http"
 	containerName            = "warehouse"
 	connectionStringTemplate = "DefaultEndpointsProtocol=%s;AccountName=%s;AccountKey=%s;BlobEndpoint=%s://%s/%s;"
 )
 
+const azureComposeContent = `
+services:
+  azurite:
+    image: mcr.microsoft.com/azure-storage/azurite
+    ports:
+      - 11000
+    command: ["azurite-blob", "--loose", "--blobHost", "0.0.0.0", "--blobPort", "11000"]
+`
+
 type AzureBlobIOTestSuite struct {
 	suite.Suite
 
-	ctx context.Context
+	ctx             context.Context
+	stack           compose.ComposeStack
+	azuriteEndpoint string
+}
+
+func (s *AzureBlobIOTestSuite) SetupSuite() {
+	ctx := s.T().Context()
+	stack, err := compose.NewDockerComposeWith(compose.WithStackReaders(strings.NewReader(azureComposeContent)))
+	s.Require().NoError(err)
+	s.stack = stack
+	s.Require().NoError(stack.Up(ctx))
+
+	svc, err := stack.ServiceContainer(ctx, "azurite")
+	s.Require().NoError(err)
+	s.Require().NotNil(svc)
+
+	endpoint, err := svc.PortEndpoint(ctx, "11000", "")
+	s.Require().NoError(err)
+	s.Require().NotNil(endpoint)
+	s.azuriteEndpoint = endpoint
+}
+
+func (s *AzureBlobIOTestSuite) TearDownSuite() {
+	s.Require().NoError(s.stack.Down(s.T().Context()))
 }
 
 func (s *AzureBlobIOTestSuite) SetupTest() {
@@ -66,7 +99,7 @@ func (s *AzureBlobIOTestSuite) TestAzureBlobWarehouseKey() {
 		"type":                      "sql",
 		io.AdlsSharedKeyAccountName: accountName,
 		io.AdlsSharedKeyAccountKey:  accountKey,
-		io.AdlsEndpoint:             endpoint,
+		io.AdlsEndpoint:             s.azuriteEndpoint,
 		io.AdlsProtocol:             protocol,
 	}
 
@@ -93,7 +126,7 @@ func (s *AzureBlobIOTestSuite) TestAzureBlobWarehouseKey() {
 }
 
 func (s *AzureBlobIOTestSuite) TestAzuriteWarehouseConnectionString() {
-	connectionString := fmt.Sprintf(connectionStringTemplate, protocol, accountName, accountKey, protocol, endpoint, accountName)
+	connectionString := fmt.Sprintf(connectionStringTemplate, protocol, accountName, accountKey, protocol, s.azuriteEndpoint, accountName)
 	path := "iceberg-test-azure/test-table-azure"
 	containerName := "warehouse"
 	properties := iceberg.Properties{
@@ -131,7 +164,7 @@ func (s *AzureBlobIOTestSuite) createContainerIfNotExist(containerName string) e
 	svcURL, err := azureblob.NewServiceURL(&azureblob.ServiceURLOptions{
 		AccountName:   accountName,
 		Protocol:      protocol,
-		StorageDomain: endpoint,
+		StorageDomain: s.azuriteEndpoint,
 	})
 	if err != nil {
 		return err

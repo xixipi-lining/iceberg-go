@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/apache/iceberg-go"
@@ -33,24 +34,54 @@ import (
 	sqlcat "github.com/apache/iceberg-go/catalog/sql"
 	"github.com/apache/iceberg-go/io"
 	"github.com/stretchr/testify/suite"
+	"github.com/testcontainers/testcontainers-go/modules/compose"
 	"github.com/uptrace/bun/driver/sqliteshim"
 )
 
 const (
-	gcsEndpoint   = "localhost:4443/storage/v1"
-	gcsProtocol   = "http"
 	gcsBucketName = "warehouse"
 )
+
+const gcsComposeContent = `
+services:
+  fake-gcs-server:
+    image: fsouza/fake-gcs-server
+    ports:
+      - 4443
+    command: ["-scheme", "http", "-port", "4443", "-backend", "memory", "-public-host", "fake-gcs-server:4443"]
+`
 
 type GCSIOTestSuite struct {
 	suite.Suite
 
-	ctx context.Context
+	ctx      context.Context
+	stack    compose.ComposeStack
+	endpoint string
+}
+
+func (s *GCSIOTestSuite) SetupSuite() {
+	stack, err := compose.NewDockerComposeWith(compose.WithStackReaders(strings.NewReader(gcsComposeContent)))
+	s.Require().NoError(err)
+	s.stack = stack
+	s.Require().NoError(stack.Up(s.T().Context()))
+
+	svc, err := stack.ServiceContainer(s.T().Context(), "fake-gcs-server")
+	s.Require().NoError(err)
+	s.Require().NotNil(svc)
+
+	endpoint, err := svc.PortEndpoint(s.T().Context(), "4443", "")
+	s.Require().NoError(err)
+	s.Require().NotNil(endpoint)
+	s.endpoint = endpoint
+}
+
+func (s *GCSIOTestSuite) TearDownSuite() {
+	s.Require().NoError(s.stack.Down(s.T().Context()))
 }
 
 func (s *GCSIOTestSuite) cleanBucket() {
 	// Clean the bucket: list and delete all objects
-	listURL := fmt.Sprintf("http://%s/b/%s/o", gcsEndpoint, gcsBucketName)
+	listURL := fmt.Sprintf("http://%s/storage/v1/b/%s/o", s.endpoint, gcsBucketName)
 	resp, err := http.Get(listURL)
 	if err != nil {
 		s.Require().NoError(err)
@@ -66,7 +97,7 @@ func (s *GCSIOTestSuite) cleanBucket() {
 		list.Items = nil
 	}
 	for _, item := range list.Items {
-		objURL := fmt.Sprintf("http://%s/b/%s/o/%s", gcsEndpoint, gcsBucketName, item.Name)
+		objURL := fmt.Sprintf("http://%s/storage/v1/b/%s/o/%s", s.endpoint, gcsBucketName, item.Name)
 		// URL-encode the object name
 		objURL = objURL[:len(objURL)-len(item.Name)] + url.PathEscape(item.Name)
 		req, err := http.NewRequest(http.MethodDelete, objURL, nil)
@@ -85,7 +116,7 @@ func (s *GCSIOTestSuite) SetupTest() {
 	s.ctx = context.Background()
 
 	// Create the bucket in fake-gcs-server (correct API)
-	url := fmt.Sprintf("http://%s/b?project=fake-project-id", gcsEndpoint)
+	url := fmt.Sprintf("http://%s/storage/v1/b?project=fake-project-id", s.endpoint)
 	body, _ := json.Marshal(map[string]string{"name": gcsBucketName})
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -113,7 +144,7 @@ func (s *GCSIOTestSuite) TestGCSWarehouse() {
 		sqlcat.DialectKey: string(sqlcat.SQLite),
 		"type":            "sql",
 		"warehouse":       fmt.Sprintf("gs://%s/iceberg/", gcsBucketName),
-		io.GCSEndpoint:    fmt.Sprintf("http://%s/", gcsEndpoint),
+		io.GCSEndpoint:    fmt.Sprintf("http://%s/storage/v1/", s.endpoint),
 		io.GCSUseJsonAPI:  "true",
 	}
 
