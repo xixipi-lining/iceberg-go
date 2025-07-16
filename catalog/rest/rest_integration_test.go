@@ -23,6 +23,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow/array"
@@ -35,13 +36,95 @@ import (
 	"github.com/apache/iceberg-go/table"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
+	"github.com/testcontainers/testcontainers-go/modules/compose"
 )
+
+const composeContent = `
+services:
+  rest:
+    image: apache/iceberg-rest-fixture
+    networks:
+      iceberg_net:
+    ports:
+      - 8181
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+      - CATALOG_WAREHOUSE=s3://warehouse/
+      - CATALOG_IO__IMPL=org.apache.iceberg.aws.s3.S3FileIO
+      - CATALOG_S3_ENDPOINT=http://minio:9000
+  minio:
+    image: minio/minio
+    environment:
+      - MINIO_ROOT_USER=admin
+      - MINIO_ROOT_PASSWORD=password
+      - MINIO_DOMAIN=minio
+    networks:
+      iceberg_net:
+        aliases:
+          - warehouse.minio
+    ports:
+      - 9001
+      - 9000
+    command: ["server", "/data", "--console-address", ":9001"]
+  mc:
+    depends_on:
+      - minio
+    image: minio/mc
+    networks:
+      iceberg_net:
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/mc alias set minio http://minio:9000 admin password) do echo '...waiting...' && sleep 1; done;
+      /usr/bin/mc rm -r --force minio/warehouse;
+      /usr/bin/mc mb minio/warehouse;
+      /usr/bin/mc policy set public minio/warehouse;
+      tail -f /dev/null
+      "
+networks:
+  iceberg_net:
+`
 
 type RestIntegrationSuite struct {
 	suite.Suite
 
 	ctx context.Context
 	cat *rest.Catalog
+
+	stack *compose.DockerCompose
+	restEndpoint string
+	s3Endpoint string
+}
+
+func (s *RestIntegrationSuite) SetupSuite() {
+	ctx := s.T().Context()
+	stack, err := compose.NewDockerComposeWith(compose.WithStackReaders(strings.NewReader(composeContent)))
+	s.Require().NoError(err)
+	s.stack = stack
+	s.Require().NoError(stack.Up(ctx))
+
+	restSvc, err := stack.ServiceContainer(ctx, "rest")
+	s.Require().NoError(err)
+	s.Require().NotNil(restSvc)
+
+	endpoint, err := restSvc.PortEndpoint(ctx, "8181", "http")
+	s.Require().NoError(err)
+	s.Require().NotNil(endpoint)
+	s.restEndpoint = endpoint
+
+	minioSvc, err := stack.ServiceContainer(ctx, "minio")
+	s.Require().NoError(err)
+	s.Require().NotNil(minioSvc)
+
+	endpoint, err = minioSvc.PortEndpoint(ctx, "9000", "http")
+	s.Require().NoError(err)
+	s.Require().NotNil(endpoint)
+	s.s3Endpoint = endpoint
 }
 
 const TestNamespaceIdent = "TEST NS"
@@ -49,10 +132,11 @@ const TestNamespaceIdent = "TEST NS"
 func (s *RestIntegrationSuite) loadCatalog(ctx context.Context) *rest.Catalog {
 	cat, err := catalog.Load(ctx, "local", iceberg.Properties{
 		"type":               "rest",
-		"uri":                "http://localhost:8181",
+		"uri":                s.restEndpoint,
 		io.S3Region:          "us-east-1",
 		io.S3AccessKeyID:     "admin",
 		io.S3SecretAccessKey: "password",
+		io.S3EndpointURL:     s.s3Endpoint,
 	})
 	s.Require().NoError(err)
 	s.Require().IsType(&rest.Catalog{}, cat)

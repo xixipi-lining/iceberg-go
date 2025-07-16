@@ -25,7 +25,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -36,7 +38,48 @@ import (
 	"github.com/apache/iceberg-go/io"
 	"github.com/apache/iceberg-go/table"
 	"github.com/stretchr/testify/suite"
+	"github.com/testcontainers/testcontainers-go/modules/compose"
+	"github.com/testcontainers/testcontainers-go/wait"
 )
+
+const composeContent = `
+services:
+  minio:
+    image: minio/minio
+    environment:
+      - MINIO_ROOT_USER=admin
+      - MINIO_ROOT_PASSWORD=password
+      - MINIO_DOMAIN=minio
+    networks:
+      iceberg_net:
+        aliases:
+          - warehouse.minio
+    ports:
+      - 9001
+      - 9000
+    command: ["server", "/data", "--console-address", ":9001"]
+  mc:
+    depends_on:
+      - minio
+    image: minio/mc
+    networks:
+      iceberg_net:
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/mc alias set minio http://minio:9000 admin password) do echo '...waiting...' && sleep 1; done;
+      /usr/bin/mc rm -r --force minio/warehouse;
+      /usr/bin/mc mb minio/warehouse;
+      /usr/bin/mc policy set public minio/warehouse;
+      echo 'BUCKET_READY';
+      tail -f /dev/null
+      "
+networks:
+  iceberg_net:
+`
 
 type SQLIntegrationSuite struct {
 	suite.Suite
@@ -44,6 +87,9 @@ type SQLIntegrationSuite struct {
 	ctx context.Context
 	cat *sql.Catalog
 	dir string
+
+	stack *compose.DockerCompose
+	s3Endpoint string
 }
 
 const (
@@ -56,6 +102,36 @@ var tableSchemaSimple = iceberg.NewSchemaWithIdentifiers(1, []int{2},
 	iceberg.NestedField{ID: 2, Name: "bar", Type: iceberg.PrimitiveTypes.Int32, Required: true},
 	iceberg.NestedField{ID: 3, Name: "baz", Type: iceberg.PrimitiveTypes.Bool, Required: false},
 )
+
+func (s *SQLIntegrationSuite) SetupSuite() {
+	ctx := s.T().Context()
+	stack, err := compose.NewDockerComposeWith(compose.WithStackReaders(strings.NewReader(composeContent)))
+	s.Require().NoError(err)
+	s.stack = stack
+	s.Require().NoError(stack.Up(ctx))
+
+	minioSvc, err := stack.ServiceContainer(ctx, "minio")
+	s.Require().NoError(err)
+	s.Require().NotNil(minioSvc)
+
+	endpoint, err := minioSvc.PortEndpoint(ctx, "9000", "http")
+	s.Require().NoError(err)
+	s.Require().NotNil(endpoint)
+	s.s3Endpoint = endpoint
+
+	s.waitForMinIOReady(ctx)
+}
+
+// waitForMinIOReady waits for MinIO service and warehouse bucket to be ready
+func (s *SQLIntegrationSuite) waitForMinIOReady(ctx context.Context) {
+	mcSvc, err := s.stack.ServiceContainer(ctx, "mc")
+	s.Require().NoError(err)
+	s.Require().NotNil(mcSvc)
+	
+	// Wait for the "BUCKET_READY" log message from mc service
+	waitStrategy := wait.ForLog("BUCKET_READY").WithStartupTimeout(60 * time.Second)
+	s.Require().NoError(waitStrategy.WaitUntilReady(ctx, mcSvc))
+}
 
 func (s *SQLIntegrationSuite) loadCatalog(ctx context.Context) *sql.Catalog {
 	// Create a temp dir for SQLite database
@@ -73,6 +149,7 @@ func (s *SQLIntegrationSuite) loadCatalog(ctx context.Context) *sql.Catalog {
 		io.S3Region:          "us-east-1",
 		io.S3AccessKeyID:     "admin",
 		io.S3SecretAccessKey: "password",
+		io.S3EndpointURL:     s.s3Endpoint,
 		"warehouse":          location,
 	})
 	s.Require().NoError(err)
