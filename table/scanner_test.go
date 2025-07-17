@@ -137,7 +137,7 @@ type ScannerSuite struct {
 
 	stack        compose.ComposeStack
 	restEndpoint string
-	s3Endpoint string
+	s3Endpoint   string
 }
 
 func (s *ScannerSuite) SetupSuite() {
@@ -189,7 +189,7 @@ func (s *ScannerSuite) waitForMinIOReady(ctx context.Context) {
 	mcSvc, err := s.stack.ServiceContainer(ctx, "mc")
 	s.Require().NoError(err)
 	s.Require().NotNil(mcSvc)
-	
+
 	// Wait for the "BUCKET_READY" log message from mc service
 	waitStrategy := wait.ForLog("BUCKET_READY").WithStartupTimeout(60 * time.Second)
 	s.Require().NoError(waitStrategy.WaitUntilReady(ctx, mcSvc))
@@ -203,10 +203,10 @@ func (s *ScannerSuite) SetupTest() {
 
 	s.cat = cat
 	s.props = iceberg.Properties{
-		iceio.S3Region:      "us-east-1",
-		iceio.S3AccessKeyID: "admin",
+		iceio.S3Region:          "us-east-1",
+		iceio.S3AccessKeyID:     "admin",
 		iceio.S3SecretAccessKey: "password",
-		iceio.S3EndpointURL: s.s3Endpoint,
+		iceio.S3EndpointURL:     s.s3Endpoint,
 	}
 }
 

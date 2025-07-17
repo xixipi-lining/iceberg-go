@@ -129,9 +129,9 @@ type SparkIntegrationTestSuite struct {
 	cat   catalog.Catalog
 	props iceberg.Properties
 
-	stack *compose.DockerCompose
+	stack        *compose.DockerCompose
 	restEndpoint string
-	s3Endpoint string
+	s3Endpoint   string
 }
 
 func (s *SparkIntegrationTestSuite) SetupSuite() {

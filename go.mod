@@ -43,7 +43,6 @@ require (
 	github.com/substrait-io/substrait-go/v3 v3.9.1
 	github.com/testcontainers/testcontainers-go v0.37.0
 	github.com/testcontainers/testcontainers-go/modules/compose v0.37.0
-	github.com/testcontainers/testcontainers-go/modules/localstack v0.37.0
 	github.com/twmb/murmur3 v1.1.8
 	github.com/uptrace/bun v1.2.14
 	github.com/uptrace/bun/dialect/mssqldialect v1.2.14

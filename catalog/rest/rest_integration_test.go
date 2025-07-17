@@ -96,9 +96,9 @@ type RestIntegrationSuite struct {
 	ctx context.Context
 	cat *rest.Catalog
 
-	stack *compose.DockerCompose
+	stack        *compose.DockerCompose
 	restEndpoint string
-	s3Endpoint string
+	s3Endpoint   string
 }
 
 func (s *RestIntegrationSuite) SetupSuite() {

@@ -88,7 +88,7 @@ type SQLIntegrationSuite struct {
 	cat *sql.Catalog
 	dir string
 
-	stack *compose.DockerCompose
+	stack      *compose.DockerCompose
 	s3Endpoint string
 }
 
@@ -127,7 +127,7 @@ func (s *SQLIntegrationSuite) waitForMinIOReady(ctx context.Context) {
 	mcSvc, err := s.stack.ServiceContainer(ctx, "mc")
 	s.Require().NoError(err)
 	s.Require().NotNil(mcSvc)
-	
+
 	// Wait for the "BUCKET_READY" log message from mc service
 	waitStrategy := wait.ForLog("BUCKET_READY").WithStartupTimeout(60 * time.Second)
 	s.Require().NoError(waitStrategy.WaitUntilReady(ctx, mcSvc))

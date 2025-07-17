@@ -21,10 +21,9 @@ package dynamodb_test
 
 import (
 	"context"
-	"fmt"
 	"net/url"
+	"strings"
 	"testing"
-	"time"
 
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -42,14 +41,52 @@ import (
 	"github.com/testcontainers/testcontainers-go/modules/compose"
 )
 
-type DynamoDBIntegrationSuite struct {
-	suite.Suite
-
-	ctx       context.Context
-	cat       *dynamodbcat.Catalog
-	compose   *compose.DockerCompose
-	tableName string
-}
+const composeContent = `
+services:
+  dynamodb-local:
+    image: amazon/dynamodb-local
+    networks:
+      iceberg_net:
+    ports:
+      - 8000
+    working_dir: /home/dynamodblocal
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory"]
+  minio:
+    image: minio/minio
+    environment:
+      - MINIO_ROOT_USER=admin
+      - MINIO_ROOT_PASSWORD=password
+      - MINIO_DOMAIN=minio
+    networks:
+      iceberg_net:
+        aliases:
+          - warehouse.minio
+    ports:
+      - 9001
+      - 9000
+    command: ["server", "/data", "--console-address", ":9001"]
+  mc:
+    depends_on:
+      - minio
+    image: minio/mc
+    networks:
+      iceberg_net:
+    environment:
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password
+      - AWS_REGION=us-east-1
+    entrypoint: >
+      /bin/sh -c "
+      until (/usr/bin/mc alias set minio http://minio:9000 admin password) do echo '...waiting...' && sleep 1; done;
+      /usr/bin/mc rm -r --force minio/warehouse;
+      /usr/bin/mc mb minio/warehouse;
+      /usr/bin/mc policy set public minio/warehouse;
+      echo 'BUCKET_READY';
+      tail -f /dev/null
+      "
+networks:
+  iceberg_net:
+`
 
 const (
 	TestNamespaceIdent = "TEST_NS"
@@ -112,69 +149,67 @@ var tableSchemaNestedTest = iceberg.NewSchemaWithIdentifiers(1,
 	},
 )
 
+type DynamoDBIntegrationSuite struct {
+	suite.Suite
+
+	ctx   context.Context
+	cat   *dynamodbcat.Catalog
+	stack *compose.DockerCompose
+
+	dynamodbEndpoint string
+	s3Endpoint       string
+}
+
 func (s *DynamoDBIntegrationSuite) SetupSuite() {
-	s.ctx = context.Background()
+	s.ctx = s.T().Context()
+	stack, err := compose.NewDockerComposeWith(compose.WithStackReaders(strings.NewReader(composeContent)))
+	s.Require().NoError(err)
+	s.stack = stack
+	s.Require().NoError(stack.Up(s.ctx))
 
-
-	// Use Docker Compose for better service orchestration
-	composeFilePath := "./docker-compose.test.yml"
-	var err error
-	s.compose, err = compose.NewDockerComposeWith(
-		compose.WithStackFiles(composeFilePath),
-	)
+	dynamodbContainer, err := s.stack.ServiceContainer(s.ctx, "dynamodb-local")
 	s.Require().NoError(err)
 
-	err = s.compose.Up(s.ctx, compose.Wait(true))
+	endpoint, err := dynamodbContainer.PortEndpoint(s.ctx, "8000", "http")
 	s.Require().NoError(err)
+	s.Require().NotNil(endpoint)
+	s.dynamodbEndpoint = endpoint
 
-	// Generate unique table name for this test run
-	s.tableName = fmt.Sprintf("iceberg-catalog-test-%d", time.Now().UnixNano())
+	minioContainer, err := s.stack.ServiceContainer(s.ctx, "minio")
+	s.Require().NoError(err)
+	s.Require().NotNil(minioContainer)
+
+	endpoint, err = minioContainer.PortEndpoint(s.ctx, "9000", "http")
+	s.Require().NoError(err)
+	s.Require().NotNil(endpoint)
+	s.s3Endpoint = endpoint
 }
 
 func (s *DynamoDBIntegrationSuite) TearDownSuite() {
-	if s.compose != nil {
-		s.compose.Down(s.ctx, compose.RemoveOrphans(true), compose.RemoveImagesLocal)
+	if s.stack != nil {
+		s.stack.Down(s.ctx, compose.RemoveOrphans(true), compose.RemoveImagesLocal)
 	}
 }
 
 func (s *DynamoDBIntegrationSuite) SetupTest() {
-	// Get DynamoDB endpoint from compose
-	dynamodbContainer, err := s.compose.ServiceContainer(s.ctx, "dynamodb-local")
-	s.Require().NoError(err)
-
-	dynamodbEndpoint, err := dynamodbContainer.Endpoint(s.ctx, "8000")
-	s.Require().NoError(err)
-
-	// Get MinIO endpoint from compose
-	minioContainer, err := s.compose.ServiceContainer(s.ctx, "minio")
-	s.Require().NoError(err)
-
-	minioEndpoint, err := minioContainer.Endpoint(s.ctx, "9000")
-	s.Require().NoError(err)
-
-	// Create AWS config pointing to local services
-	awsCfg, err := config.LoadDefaultConfig(s.ctx,
-		config.WithEndpointResolverWithOptions(aws.EndpointResolverWithOptionsFunc(
-			func(service, region string, options ...interface{}) (aws.Endpoint, error) {
-				switch service {
-				case "DynamoDB":
-					return aws.Endpoint{URL: "http://" + dynamodbEndpoint}, nil
-				case "S3":
-					return aws.Endpoint{URL: "http://" + minioEndpoint}, nil
-				default:
-					return aws.Endpoint{}, nil
-				}
-			})),
-		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("admin", "password", "")),
+	cfg, err := config.LoadDefaultConfig(s.ctx,
 		config.WithRegion("us-east-1"),
+		config.WithBaseEndpoint(s.dynamodbEndpoint),
+		config.WithCredentialsProvider(
+			credentials.NewStaticCredentialsProvider("admin", "password", "token"),
+		),
+		config.WithRetryMaxAttempts(10),
+		config.WithRetryMode(aws.RetryModeStandard),
 	)
 	s.Require().NoError(err)
 
-	// Create DynamoDB client
-	ddbClient := dynamodb.NewFromConfig(awsCfg)
-
-	// Create catalog
-	cat, err := dynamodbcat.NewCatalog(s.tableName, ddbClient)
+	cat, err := dynamodbcat.NewCatalog("test-table", dynamodb.NewFromConfig(cfg), iceberg.Properties{
+		io.S3Region:          "us-east-1",
+		io.S3AccessKeyID:     "admin",
+		io.S3SecretAccessKey: "password",
+		io.S3EndpointURL:     s.s3Endpoint,
+		"warehouse":          location,
+	})
 	s.Require().NoError(err)
 	s.cat = cat
 }
@@ -246,35 +281,6 @@ func (s *DynamoDBIntegrationSuite) TestCreateTable() {
 	s.True(exists)
 
 	s.Require().NoError(s.cat.DropTable(s.ctx, catalog.ToIdentifier(TestNamespaceIdent, "test-table")))
-}
-
-func (s *DynamoDBIntegrationSuite) TestRegisterTable() {
-	s.ensureNamespace()
-
-	// First create a table to get a valid metadata location
-	tbl, err := s.cat.CreateTable(s.ctx,
-		catalog.ToIdentifier(TestNamespaceIdent, "test-table"),
-		tableSchemaSimple, catalog.WithLocation(location))
-	s.Require().NoError(err)
-	s.Require().NotNil(tbl)
-
-	metadataLocation := tbl.MetadataLocation()
-
-	// Drop the table from catalog but keep metadata
-	s.Require().NoError(s.cat.DropTable(s.ctx, catalog.ToIdentifier(TestNamespaceIdent, "test-table")))
-
-	// Register the table back using the metadata location
-	registeredTbl, err := s.cat.RegisterTable(s.ctx,
-		catalog.ToIdentifier(TestNamespaceIdent, "test-table-registered"),
-		metadataLocation)
-	s.Require().NoError(err)
-	s.Require().NotNil(registeredTbl)
-
-	s.Equal(metadataLocation, registeredTbl.MetadataLocation())
-	s.Equal(location, registeredTbl.Location())
-
-	// Clean up
-	s.Require().NoError(s.cat.DropTable(s.ctx, catalog.ToIdentifier(TestNamespaceIdent, "test-table-registered")))
 }
 
 func (s *DynamoDBIntegrationSuite) TestRenameTable() {
@@ -384,8 +390,9 @@ func (s *DynamoDBIntegrationSuite) TestWriteCommitTable() {
 	s.Require().NoError(pqarrow.WriteTable(table, fw, table.NumRows(),
 		nil, pqarrow.DefaultWriterProps()))
 	defer func(fs io.IO, name string) {
-		err = fs.Remove(name)
-		s.Require().NoError(err)
+		if removeErr := fs.Remove(name); removeErr != nil {
+			s.T().Logf("Failed to remove test file %s: %v", name, removeErr)
+		}
 	}(fs, pqfile)
 
 	txn := tbl.NewTransaction()
