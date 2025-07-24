@@ -29,11 +29,11 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/compute"
 	"github.com/apache/arrow-go/v18/arrow/compute/exprs"
 	"github.com/apache/arrow-go/v18/arrow/memory"
-	"github.com/apache/iceberg-go"
-	iceio "github.com/apache/iceberg-go/io"
-	"github.com/apache/iceberg-go/table/internal"
-	"github.com/apache/iceberg-go/table/substrait"
 	"github.com/substrait-io/substrait-go/v3/expr"
+	"github.com/xixipi-lining/iceberg-go"
+	iceio "github.com/xixipi-lining/iceberg-go/io"
+	"github.com/xixipi-lining/iceberg-go/table/internal"
+	"github.com/xixipi-lining/iceberg-go/table/substrait"
 	"golang.org/x/sync/errgroup"
 )
 

@@ -21,9 +21,9 @@ import (
 	"math"
 	"testing"
 
-	"github.com/apache/iceberg-go/internal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/xixipi-lining/iceberg-go/internal"
 )
 
 func TestBinPacking(t *testing.T) {

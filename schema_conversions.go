@@ -20,8 +20,8 @@ package iceberg
 import (
 	"fmt"
 
-	"github.com/apache/iceberg-go/internal"
 	"github.com/hamba/avro/v2"
+	"github.com/xixipi-lining/iceberg-go/internal"
 )
 
 func partitionTypeToAvroSchema(t *StructType) (avro.Schema, error) {

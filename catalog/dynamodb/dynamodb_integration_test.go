@@ -28,17 +28,17 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
-	"github.com/apache/iceberg-go"
-	"github.com/apache/iceberg-go/catalog"
-	dynamodbcat "github.com/apache/iceberg-go/catalog/dynamodb"
-	"github.com/apache/iceberg-go/io"
-	"github.com/apache/iceberg-go/table"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/stretchr/testify/suite"
 	"github.com/testcontainers/testcontainers-go/modules/compose"
+	"github.com/xixipi-lining/iceberg-go"
+	"github.com/xixipi-lining/iceberg-go/catalog"
+	dynamodbcat "github.com/xixipi-lining/iceberg-go/catalog/dynamodb"
+	"github.com/xixipi-lining/iceberg-go/io"
+	"github.com/xixipi-lining/iceberg-go/table"
 )
 
 const composeContent = `

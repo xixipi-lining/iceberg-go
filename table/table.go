@@ -26,10 +26,10 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
-	"github.com/apache/iceberg-go"
-	"github.com/apache/iceberg-go/internal"
-	"github.com/apache/iceberg-go/io"
-	tblutils "github.com/apache/iceberg-go/table/internal"
+	"github.com/xixipi-lining/iceberg-go"
+	"github.com/xixipi-lining/iceberg-go/internal"
+	"github.com/xixipi-lining/iceberg-go/io"
+	tblutils "github.com/xixipi-lining/iceberg-go/table/internal"
 	"golang.org/x/sync/errgroup"
 )
 

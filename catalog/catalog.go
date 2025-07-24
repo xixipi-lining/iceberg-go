@@ -22,7 +22,7 @@
 // catalog types which will register themselves if imported. For instance,
 // adding the following import:
 //
-//	import _ "github.com/apache/iceberg-go/catalog/rest"
+//	import _ "github.com/xixipi-lining/iceberg-go/catalog/rest"
 //
 // Will register the REST catalog implementation.
 package catalog
@@ -35,9 +35,9 @@ import (
 	"maps"
 	"strings"
 
-	"github.com/apache/iceberg-go"
-	iceinternal "github.com/apache/iceberg-go/internal"
-	"github.com/apache/iceberg-go/table"
+	"github.com/xixipi-lining/iceberg-go"
+	iceinternal "github.com/xixipi-lining/iceberg-go/internal"
+	"github.com/xixipi-lining/iceberg-go/table"
 )
 
 type Type string

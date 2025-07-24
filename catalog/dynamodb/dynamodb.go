@@ -11,17 +11,17 @@ import (
 	"time"
 	_ "unsafe"
 
-	"github.com/apache/iceberg-go"
-	"github.com/apache/iceberg-go/catalog"
-	"github.com/apache/iceberg-go/catalog/internal"
-	"github.com/apache/iceberg-go/io"
-	"github.com/apache/iceberg-go/table"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/dynamodb/expression"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
+	"github.com/xixipi-lining/iceberg-go"
+	"github.com/xixipi-lining/iceberg-go/catalog"
+	"github.com/xixipi-lining/iceberg-go/catalog/internal"
+	"github.com/xixipi-lining/iceberg-go/io"
+	"github.com/xixipi-lining/iceberg-go/table"
 )
 
 const (

@@ -22,8 +22,8 @@ import (
 	"errors"
 	"io/fs"
 
-	"github.com/apache/iceberg-go/io"
 	"github.com/stretchr/testify/mock"
+	"github.com/xixipi-lining/iceberg-go/io"
 )
 
 type MockFS struct {

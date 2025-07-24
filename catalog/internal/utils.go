@@ -30,11 +30,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/apache/iceberg-go"
-	"github.com/apache/iceberg-go/catalog"
-	"github.com/apache/iceberg-go/io"
-	"github.com/apache/iceberg-go/table"
 	"github.com/google/uuid"
+	"github.com/xixipi-lining/iceberg-go"
+	"github.com/xixipi-lining/iceberg-go/catalog"
+	"github.com/xixipi-lining/iceberg-go/io"
+	"github.com/xixipi-lining/iceberg-go/table"
 )
 
 func GetMetadataLoc(location string, newVersion uint) string {

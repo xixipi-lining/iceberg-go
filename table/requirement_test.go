@@ -20,9 +20,9 @@ package table_test
 import (
 	"testing"
 
-	"github.com/apache/iceberg-go/table"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
+	"github.com/xixipi-lining/iceberg-go/table"
 )
 
 func TestParseRequirementBytes(t *testing.T) {

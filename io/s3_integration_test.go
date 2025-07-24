@@ -25,12 +25,12 @@ import (
 
 	"github.com/testcontainers/testcontainers-go/modules/compose"
 
-	"github.com/apache/iceberg-go"
-	"github.com/apache/iceberg-go/catalog"
-	sqlcat "github.com/apache/iceberg-go/catalog/sql"
-	"github.com/apache/iceberg-go/io"
 	"github.com/stretchr/testify/suite"
 	"github.com/uptrace/bun/driver/sqliteshim"
+	"github.com/xixipi-lining/iceberg-go"
+	"github.com/xixipi-lining/iceberg-go/catalog"
+	sqlcat "github.com/xixipi-lining/iceberg-go/catalog/sql"
+	"github.com/xixipi-lining/iceberg-go/io"
 )
 
 const s3ComposeContent = `

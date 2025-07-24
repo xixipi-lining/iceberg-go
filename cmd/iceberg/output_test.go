@@ -22,9 +22,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/apache/iceberg-go/table"
 	"github.com/pterm/pterm"
 	"github.com/stretchr/testify/assert"
+	"github.com/xixipi-lining/iceberg-go/table"
 )
 
 func Test_textOutput_DescribeTable(t *testing.T) {

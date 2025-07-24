@@ -23,8 +23,8 @@ import (
 	"slices"
 
 	"github.com/apache/arrow-go/v18/parquet/metadata"
-	"github.com/apache/iceberg-go"
 	"github.com/google/uuid"
+	"github.com/xixipi-lining/iceberg-go"
 )
 
 const (

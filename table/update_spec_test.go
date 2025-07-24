@@ -20,9 +20,9 @@ package table_test
 import (
 	"testing"
 
-	"github.com/apache/iceberg-go"
-	"github.com/apache/iceberg-go/table"
 	"github.com/stretchr/testify/assert"
+	"github.com/xixipi-lining/iceberg-go"
+	"github.com/xixipi-lining/iceberg-go/table"
 )
 
 var testSchema = iceberg.NewSchema(1,

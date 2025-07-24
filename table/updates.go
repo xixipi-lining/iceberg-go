@@ -20,8 +20,8 @@ package table
 import (
 	"fmt"
 
-	"github.com/apache/iceberg-go"
 	"github.com/google/uuid"
+	"github.com/xixipi-lining/iceberg-go"
 )
 
 // These are the various update actions defined in the iceberg spec

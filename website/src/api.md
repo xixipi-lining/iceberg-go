@@ -21,21 +21,21 @@
 
 `Catalog` is the entry point for accessing iceberg tables. You can use a catalog to:
 
-* Create and list namespaces.
-* Create, load, and drop tables
+- Create and list namespaces.
+- Create, load, and drop tables
 
-Currently only rest catalog has been implemented, and other catalogs are under active development. Here is an 
+Currently only rest catalog has been implemented, and other catalogs are under active development. Here is an
 example of how to create a `RestCatalog`:
 
 ```go
 import (
     "context"
-    "github.com/apache/iceberg-go/catalog"
-    "github.com/apache/iceberg-go/catalog/rest"
+    "github.com/xixipi-lining/iceberg-go/catalog"
+    "github.com/xixipi-lining/iceberg-go/catalog/rest"
 )
 
 // Create a REST catalog
-cat, err := rest.NewCatalog(context.Background(), "rest", "http://localhost:8181", 
+cat, err := rest.NewCatalog(context.Background(), "rest", "http://localhost:8181",
     rest.WithOAuthToken("your-token"))
 if err != nil {
     log.Fatal(err)
@@ -57,6 +57,7 @@ for _, ns := range namespaces {
 ```
 
 Then you can run following code to create namespace:
+
 ```go
 // Create a namespace
 namespace := catalog.ToIdentifier("my_namespace")
@@ -74,8 +75,8 @@ You can also use SQL-based catalogs:
 
 ```go
 import (
-    "github.com/apache/iceberg-go/catalog"
-    "github.com/apache/iceberg-go/io"
+    "github.com/xixipi-lining/iceberg-go/catalog"
+    "github.com/xixipi-lining/iceberg-go/io"
 )
 
 // Create a SQLite catalog
@@ -100,7 +101,7 @@ For AWS Glue integration:
 
 ```go
 import (
-    "github.com/apache/iceberg-go/catalog/glue"
+    "github.com/xixipi-lining/iceberg-go/catalog/glue"
     "github.com/aws/aws-sdk-go-v2/config"
 )
 
@@ -134,9 +135,9 @@ You can use following code to create a table:
 
 ```go
 import (
-    "github.com/apache/iceberg-go"
-    "github.com/apache/iceberg-go/catalog"
-    "github.com/apache/iceberg-go/table"
+    "github.com/xixipi-lining/iceberg-go"
+    "github.com/xixipi-lining/iceberg-go/catalog"
+    "github.com/xixipi-lining/iceberg-go/table"
 )
 
 // Create a simple schema
@@ -284,8 +285,8 @@ You can create tables with partitioning:
 
 ```go
 import (
-    "github.com/apache/iceberg-go"
-    "github.com/apache/iceberg-go/catalog"
+    "github.com/xixipi-lining/iceberg-go"
+    "github.com/xixipi-lining/iceberg-go/catalog"
 )
 
 // Create schema

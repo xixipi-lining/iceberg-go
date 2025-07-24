@@ -30,11 +30,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apache/iceberg-go"
-	"github.com/apache/iceberg-go/catalog"
-	"github.com/apache/iceberg-go/catalog/rest"
-	"github.com/apache/iceberg-go/table"
 	"github.com/stretchr/testify/suite"
+	"github.com/xixipi-lining/iceberg-go"
+	"github.com/xixipi-lining/iceberg-go/catalog"
+	"github.com/xixipi-lining/iceberg-go/catalog/rest"
+	"github.com/xixipi-lining/iceberg-go/table"
 )
 
 const (

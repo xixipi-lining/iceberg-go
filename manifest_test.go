@@ -23,10 +23,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/apache/iceberg-go/internal"
 	"github.com/hamba/avro/v2"
 	"github.com/hamba/avro/v2/ocf"
 	"github.com/stretchr/testify/suite"
+	"github.com/xixipi-lining/iceberg-go/internal"
 )
 
 var (

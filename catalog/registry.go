@@ -26,8 +26,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/apache/iceberg-go"
-	"github.com/apache/iceberg-go/config"
+	"github.com/xixipi-lining/iceberg-go"
+	"github.com/xixipi-lining/iceberg-go/config"
 )
 
 type registry map[string]Registrar

@@ -27,17 +27,17 @@ import (
 	"strings"
 	_ "unsafe"
 
-	"github.com/apache/iceberg-go"
-	"github.com/apache/iceberg-go/catalog"
-	"github.com/apache/iceberg-go/catalog/internal"
-	"github.com/apache/iceberg-go/io"
-	"github.com/apache/iceberg-go/table"
-	"github.com/apache/iceberg-go/utils"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/glue"
 	"github.com/aws/aws-sdk-go-v2/service/glue/types"
+	"github.com/xixipi-lining/iceberg-go"
+	"github.com/xixipi-lining/iceberg-go/catalog"
+	"github.com/xixipi-lining/iceberg-go/catalog/internal"
+	"github.com/xixipi-lining/iceberg-go/io"
+	"github.com/xixipi-lining/iceberg-go/table"
+	"github.com/xixipi-lining/iceberg-go/utils"
 )
 
 const (
