@@ -708,22 +708,27 @@ func (c *Catalog) listTablesAll(ctx context.Context, namespace table.Identifier)
 	return ret, nil
 }
 
-func (c *Catalog) ListTablesPaginated(ctx context.Context, namespace table.Identifier, pageToken string, pageSize int) ([]table.Identifier, string, error) {
+func (c *Catalog) ListTablesPaginated(ctx context.Context, namespace table.Identifier, pageToken *string, pageSize *int) ([]table.Identifier, *string, error) {
 	ns := strings.Join(namespace, ".")
 	exists, err := c.namespaceExists(ctx, ns)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
 	if !exists {
-		return nil, "", fmt.Errorf("%w: %s", catalog.ErrNoSuchNamespace, ns)
+		return nil, nil, fmt.Errorf("%w: %s", catalog.ErrNoSuchNamespace, ns)
 	}
 
 	query := c.db.NewSelect().Model((*sqlIcebergTable)(nil)).
 		Where("catalog_name = ?", c.name).
 		Where("table_namespace = ?", ns).
 		Where("iceberg_type = ?", TableType).
-		Order("table_name").
-		Limit(pageSize)
+		Order("table_name")
+
+	if pageSize != nil {
+		query.Limit(*pageSize)
+	} else {
+		query.Limit(10)
+	}
 
 	type pageTokenField struct {
 		CatalogName    string `json:"catalog_name"`
@@ -732,24 +737,24 @@ func (c *Catalog) ListTablesPaginated(ctx context.Context, namespace table.Ident
 		Order          string `json:"order"`
 	}
 
-	if pageToken != "" {
-		decoded, err := c.decodedPageToken(pageToken)
+	if pageToken != nil {
+		decoded, err := c.decodedPageToken(*pageToken)
 		if err != nil {
-			return nil, "", fmt.Errorf("error decoding page token: %w", err)
+			return nil, nil, fmt.Errorf("error decoding page token: %w", err)
 		}
 
 		var token pageTokenField
 		err = json.Unmarshal(decoded, &token)
 		if err != nil {
-			return nil, "", fmt.Errorf("error unmarshalling page token: %w", err)
+			return nil, nil, fmt.Errorf("error unmarshalling page token: %w", err)
 		}
 
 		if token.CatalogName != c.name {
-			return nil, "", fmt.Errorf("invalid page token: %s", pageToken)
+			return nil, nil, fmt.Errorf("invalid page token: %s", pageToken)
 		}
 
 		if token.TableNamespace != ns {
-			return nil, "", fmt.Errorf("invalid page token: %s", pageToken)
+			return nil, nil, fmt.Errorf("invalid page token: %s", pageToken)
 		}
 
 		query = query.Where("table_name > ?", token.TableName)
@@ -766,7 +771,7 @@ func (c *Catalog) ListTablesPaginated(ctx context.Context, namespace table.Ident
 		return tables, err
 	})
 	if err != nil {
-		return nil, "", fmt.Errorf("error listing tables for '%s': %w", namespace, err)
+		return nil, nil, fmt.Errorf("error listing tables for '%s': %w", namespace, err)
 	}
 
 	token, err := json.Marshal(pageTokenField{
@@ -776,12 +781,12 @@ func (c *Catalog) ListTablesPaginated(ctx context.Context, namespace table.Ident
 		Order:          "table_name",
 	})
 	if err != nil {
-		return nil, "", fmt.Errorf("error marshalling page token: %w", err)
+		return nil, nil, fmt.Errorf("error marshalling page token: %w", err)
 	}
 
 	encoded, err := c.encodePageToken(token)
 	if err != nil {
-		return nil, "", fmt.Errorf("error encoding page token: %w", err)
+		return nil, nil, fmt.Errorf("error encoding page token: %w", err)
 	}
 
 	ret := make([]table.Identifier, len(tables))
@@ -789,7 +794,7 @@ func (c *Catalog) ListTablesPaginated(ctx context.Context, namespace table.Ident
 		ret[i] = append(strings.Split(t.TableNamespace, "."), t.TableName)
 	}
 
-	return ret, encoded, nil
+	return ret, &encoded, nil
 }
 
 func (c *Catalog) encodePageToken(data []byte) (string, error) {
@@ -845,12 +850,12 @@ func (c *Catalog) ListNamespaces(ctx context.Context, parent table.Identifier) (
 	return ret, nil
 }
 
-func (c *Catalog) ListNamespacesPaginated(ctx context.Context, parent table.Identifier, pageToken string, pageSize int) ([]table.Identifier, string, error) {
+func (c *Catalog) ListNamespacesPaginated(ctx context.Context, parent table.Identifier, pageToken *string, pageSize *int) ([]table.Identifier, *string, error) {
 	namespaces, err := c.ListNamespaces(ctx, parent)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
-	return namespaces, "", nil
+	return namespaces, nil, nil
 }
 
 // avoid circular dependency while still avoiding having to export the getUpdatedPropsAndUpdateSummary function

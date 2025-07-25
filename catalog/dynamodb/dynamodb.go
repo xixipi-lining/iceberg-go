@@ -390,12 +390,12 @@ func (c *Catalog) ListNamespaces(ctx context.Context, parent table.Identifier) (
 	return namespaces, nil
 }
 
-func (c *Catalog) ListNamespacesPaginated(ctx context.Context, parent table.Identifier, pageToken string, pageSize int) ([]table.Identifier, string, error) {
+func (c *Catalog) ListNamespacesPaginated(ctx context.Context, parent table.Identifier, pageToken *string, pageSize *int) ([]table.Identifier, *string, error) {
 	namespaces, err := c.ListNamespaces(ctx, parent)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, err
 	}
-	return namespaces, "", nil
+	return namespaces, nil, nil
 }
 
 func (c *Catalog) CreateTable(ctx context.Context, identifier table.Identifier, schema *iceberg.Schema, opts ...catalog.CreateTableOpt) (*table.Table, error) {
@@ -734,12 +734,12 @@ func (c *Catalog) ListTables(ctx context.Context, namespace table.Identifier) it
 	}
 }
 
-func (c *Catalog) ListTablesPaginated(ctx context.Context, namespace table.Identifier, pageToken string, pageSize int) ([]table.Identifier, string, error) {
+func (c *Catalog) ListTablesPaginated(ctx context.Context, namespace table.Identifier, pageToken *string, pageSize *int) ([]table.Identifier, *string, error) {
 	expr, err := expression.NewBuilder().WithKeyCondition(
 		expression.Key(dynamodbColumnNamespace).Equal(expression.Value(strings.Join(namespace, "."))),
 	).Build()
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to build expression: %w", err)
+		return nil, nil, fmt.Errorf("failed to build expression: %w", err)
 	}
 
 	queryInput := &dynamodb.QueryInput{
@@ -748,20 +748,24 @@ func (c *Catalog) ListTablesPaginated(ctx context.Context, namespace table.Ident
 		KeyConditionExpression:    expr.KeyCondition(),
 		ExpressionAttributeNames:  expr.Names(),
 		ExpressionAttributeValues: expr.Values(),
-		Limit:                     aws.Int32(int32(pageSize)),
+	}
+	if pageSize != nil {
+		queryInput.Limit = aws.Int32(int32(*pageSize))
+	} else {
+		queryInput.Limit = aws.Int32(10)
 	}
 
-	if pageToken != "" {
-		decoded, err := c.decodedPageToken([]byte(pageToken))
+	if pageToken != nil {
+		decoded, err := c.decodedPageToken(*pageToken)
 		if err != nil {
-			return nil, "", fmt.Errorf("failed to decode page token: %w", err)
+			return nil, nil, fmt.Errorf("failed to decode page token: %w", err)
 		}
 		queryInput.ExclusiveStartKey = decoded
 	}
 
 	res, err := c.dynamodb.Query(ctx, queryInput)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to query tables: %w", err)
+		return nil, nil, fmt.Errorf("failed to query tables: %w", err)
 	}
 
 	tables := make([]table.Identifier, len(res.Items))
@@ -771,23 +775,27 @@ func (c *Catalog) ListTablesPaginated(ctx context.Context, namespace table.Ident
 			if errors.Is(err, ErrNamespaceIsNotATableIdentifier) {
 				continue
 			}
-			return nil, "", fmt.Errorf("failed to unmarshal table: %w", err)
+			return nil, nil, fmt.Errorf("failed to unmarshal table: %w", err)
 		}
 		tables[i] = append(strings.Split(tbl.TableNamespace, "."), tbl.TableName)
 	}
 
 	token, err := c.encodePageToken(res.LastEvaluatedKey)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to encode page token: %w", err)
+		return nil, nil, fmt.Errorf("failed to encode page token: %w", err)
 	}
 
-	return tables, string(token), nil
+	return tables, &token, nil
 }
 
-func (c *Catalog) encodePageToken(data map[string]types.AttributeValue) ([]byte, error) {
-	return attributevalue.MarshalMapJSON(data)
+func (c *Catalog) encodePageToken(data map[string]types.AttributeValue) (string, error) {
+	token, err := attributevalue.MarshalMapJSON(data)
+	if err != nil {
+		return "", err
+	}
+	return string(token), nil
 }
 
-func (c *Catalog) decodedPageToken(token []byte) (map[string]types.AttributeValue, error) {
-	return attributevalue.UnmarshalMapJSON(token)
+func (c *Catalog) decodedPageToken(token string) (map[string]types.AttributeValue, error) {
+	return attributevalue.UnmarshalMapJSON([]byte(token))
 }
