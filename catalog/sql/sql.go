@@ -845,6 +845,14 @@ func (c *Catalog) ListNamespaces(ctx context.Context, parent table.Identifier) (
 	return ret, nil
 }
 
+func (c *Catalog) ListNamespacesPaginated(ctx context.Context, parent table.Identifier, pageToken string, pageSize int) ([]table.Identifier, string, error) {
+	namespaces, err := c.ListNamespaces(ctx, parent)
+	if err != nil {
+		return nil, "", err
+	}
+	return namespaces, "", nil
+}
+
 // avoid circular dependency while still avoiding having to export the getUpdatedPropsAndUpdateSummary function
 // so that we can re-use it in the catalog implementations without duplicating the code.
 

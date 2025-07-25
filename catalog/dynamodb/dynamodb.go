@@ -390,6 +390,14 @@ func (c *Catalog) ListNamespaces(ctx context.Context, parent table.Identifier) (
 	return namespaces, nil
 }
 
+func (c *Catalog) ListNamespacesPaginated(ctx context.Context, parent table.Identifier, pageToken string, pageSize int) ([]table.Identifier, string, error) {
+	namespaces, err := c.ListNamespaces(ctx, parent)
+	if err != nil {
+		return nil, "", err
+	}
+	return namespaces, "", nil
+}
+
 func (c *Catalog) CreateTable(ctx context.Context, identifier table.Identifier, schema *iceberg.Schema, opts ...catalog.CreateTableOpt) (*table.Table, error) {
 	staged, err := internal.CreateStagedTable(ctx, c.props, c.LoadNamespaceProperties, identifier, schema, opts...)
 	if err != nil {
