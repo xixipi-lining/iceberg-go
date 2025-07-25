@@ -20,6 +20,8 @@ package sql
 import (
 	"context"
 	"database/sql"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
@@ -704,6 +706,98 @@ func (c *Catalog) listTablesAll(ctx context.Context, namespace table.Identifier)
 	}
 
 	return ret, nil
+}
+
+func (c *Catalog) ListTablesPaginated(ctx context.Context, namespace table.Identifier, pageToken string, pageSize int) ([]table.Identifier, string, error) {
+	ns := strings.Join(namespace, ".")
+	exists, err := c.namespaceExists(ctx, ns)
+	if err != nil {
+		return nil, "", err
+	}
+	if !exists {
+		return nil, "", fmt.Errorf("%w: %s", catalog.ErrNoSuchNamespace, ns)
+	}
+
+	query := c.db.NewSelect().Model((*sqlIcebergTable)(nil)).
+		Where("catalog_name = ?", c.name).
+		Where("table_namespace = ?", ns).
+		Where("iceberg_type = ?", TableType).
+		Order("table_name").
+		Limit(pageSize)
+
+	type pageTokenField struct {
+		CatalogName    string `json:"catalog_name"`
+		TableNamespace string `json:"table_namespace"`
+		TableName      string `json:"table_name"`
+		Order          string `json:"order"`
+	}
+
+	if pageToken != "" {
+		decoded, err := c.decodedPageToken(pageToken)
+		if err != nil {
+			return nil, "", fmt.Errorf("error decoding page token: %w", err)
+		}
+
+		var token pageTokenField
+		err = json.Unmarshal(decoded, &token)
+		if err != nil {
+			return nil, "", fmt.Errorf("error unmarshalling page token: %w", err)
+		}
+
+		if token.CatalogName != c.name {
+			return nil, "", fmt.Errorf("invalid page token: %s", pageToken)
+		}
+
+		if token.TableNamespace != ns {
+			return nil, "", fmt.Errorf("invalid page token: %s", pageToken)
+		}
+
+		query = query.Where("table_name > ?", token.TableName)
+	}
+
+	tables, err := withReadTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) ([]sqlIcebergTable, error) {
+		var tables []sqlIcebergTable
+		rows, err := tx.QueryContext(ctx, query.String())
+		if err != nil {
+			return nil, fmt.Errorf("error listing tables for '%s': %w", namespace, err)
+		}
+
+		err = c.db.ScanRows(ctx, rows, &tables)
+		return tables, err
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("error listing tables for '%s': %w", namespace, err)
+	}
+
+	token, err := json.Marshal(pageTokenField{
+		CatalogName:    c.name,
+		TableNamespace: ns,
+		TableName:      tables[len(tables)-1].TableName,
+		Order:          "table_name",
+	})
+	if err != nil {
+		return nil, "", fmt.Errorf("error marshalling page token: %w", err)
+	}
+
+	encoded, err := c.encodePageToken(token)
+	if err != nil {
+		return nil, "", fmt.Errorf("error encoding page token: %w", err)
+	}
+
+	ret := make([]table.Identifier, len(tables))
+	for i, t := range tables {
+		ret[i] = append(strings.Split(t.TableNamespace, "."), t.TableName)
+	}
+
+	return ret, encoded, nil
+}
+
+func (c *Catalog) encodePageToken(data []byte) (string, error) {
+	return base64.StdEncoding.EncodeToString(data), nil
+}
+
+func (c *Catalog) decodedPageToken(token string) ([]byte, error) {
+	return base64.StdEncoding.DecodeString(token)
 }
 
 func (c *Catalog) ListNamespaces(ctx context.Context, parent table.Identifier) ([]table.Identifier, error) {
