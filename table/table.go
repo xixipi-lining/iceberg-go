@@ -82,6 +82,18 @@ func (t Table) LocationProvider() (LocationProvider, error) {
 	return LoadLocationProvider(t.metadata.Location(), t.metadata.Properties())
 }
 
+func (t Table) Refresh(ctx context.Context) (*Table, error) {
+	fresh, err := t.cat.LoadTable(ctx, t.identifier, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	t.metadata = fresh.metadata
+	t.fsF = fresh.fsF
+	t.metadataLocation = fresh.metadataLocation
+	return &t, nil
+}
+
 func (t Table) NewTransaction() *Transaction {
 	meta, _ := MetadataBuilderFromBase(t.metadata)
 
