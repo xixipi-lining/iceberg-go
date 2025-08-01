@@ -29,9 +29,9 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/iceberg-go"
+	"github.com/apache/iceberg-go/io"
 	"github.com/google/uuid"
-	"github.com/xixipi-lining/iceberg-go"
-	"github.com/xixipi-lining/iceberg-go/io"
 )
 
 type snapshotUpdate struct {
@@ -140,6 +140,10 @@ func (t *Transaction) SetProperties(props iceberg.Properties) error {
 	}
 
 	return nil
+}
+
+func (t *Transaction) UpdateSchema(caseSensitive bool, allowIncompatibleChanges bool, opts ...UpdateSchemaOption) *UpdateSchema {
+	return NewUpdateSchema(t, caseSensitive, allowIncompatibleChanges, opts...)
 }
 
 func (t *Transaction) UpdateSpec(caseSensitive bool) *UpdateSpec {

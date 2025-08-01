@@ -21,8 +21,8 @@ import (
 	"crypto/tls"
 	"net/url"
 
+	"github.com/apache/iceberg-go"
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/xixipi-lining/iceberg-go"
 )
 
 type Option func(*options)

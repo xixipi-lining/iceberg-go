@@ -23,10 +23,10 @@ import (
 	"testing"
 
 	"github.com/apache/arrow-go/v18/arrow/decimal128"
+	"github.com/apache/iceberg-go"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/xixipi-lining/iceberg-go"
 )
 
 type ExampleVisitor struct {

@@ -31,12 +31,12 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/compute"
 	"github.com/apache/arrow-go/v18/arrow/extensions"
 	"github.com/apache/arrow-go/v18/arrow/memory"
+	"github.com/apache/iceberg-go"
+	"github.com/apache/iceberg-go/internal"
+	iceio "github.com/apache/iceberg-go/io"
+	tblutils "github.com/apache/iceberg-go/table/internal"
 	"github.com/google/uuid"
 	"github.com/pterm/pterm"
-	"github.com/xixipi-lining/iceberg-go"
-	"github.com/xixipi-lining/iceberg-go/internal"
-	iceio "github.com/xixipi-lining/iceberg-go/io"
-	tblutils "github.com/xixipi-lining/iceberg-go/table/internal"
 )
 
 // constants to look for as Keys in Arrow field metadata

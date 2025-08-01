@@ -24,7 +24,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/xixipi-lining/iceberg-go"
+	"github.com/apache/iceberg-go"
 )
 
 type SortDirection string

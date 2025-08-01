@@ -23,11 +23,11 @@ import (
 	"iter"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/iceberg-go"
+	"github.com/apache/iceberg-go/config"
+	"github.com/apache/iceberg-go/io"
+	"github.com/apache/iceberg-go/table/internal"
 	"github.com/google/uuid"
-	"github.com/xixipi-lining/iceberg-go"
-	"github.com/xixipi-lining/iceberg-go/config"
-	"github.com/xixipi-lining/iceberg-go/io"
-	"github.com/xixipi-lining/iceberg-go/table/internal"
 )
 
 type WriteTask struct {

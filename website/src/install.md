@@ -41,5 +41,5 @@ go get -u github.com/apache/iceberg-go
 2. Import it in your code:
 
 ```go
-import "github.com/xixipi-lining/iceberg-go"
+import "github.com/apache/iceberg-go"
 ```

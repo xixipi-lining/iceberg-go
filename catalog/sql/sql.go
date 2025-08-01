@@ -31,6 +31,11 @@ import (
 	"sync"
 	_ "unsafe"
 
+	"github.com/apache/iceberg-go"
+	"github.com/apache/iceberg-go/catalog"
+	"github.com/apache/iceberg-go/catalog/internal"
+	"github.com/apache/iceberg-go/io"
+	"github.com/apache/iceberg-go/table"
 	"github.com/uptrace/bun"
 	"github.com/uptrace/bun/dialect/feature"
 	"github.com/uptrace/bun/dialect/mssqldialect"
@@ -40,11 +45,6 @@ import (
 	"github.com/uptrace/bun/dialect/sqlitedialect"
 	"github.com/uptrace/bun/extra/bundebug"
 	"github.com/uptrace/bun/schema"
-	"github.com/xixipi-lining/iceberg-go"
-	"github.com/xixipi-lining/iceberg-go/catalog"
-	"github.com/xixipi-lining/iceberg-go/catalog/internal"
-	"github.com/xixipi-lining/iceberg-go/io"
-	"github.com/xixipi-lining/iceberg-go/table"
 )
 
 type SupportedDialect string
@@ -750,11 +750,11 @@ func (c *Catalog) ListTablesPaginated(ctx context.Context, namespace table.Ident
 		}
 
 		if token.CatalogName != c.name {
-			return nil, nil, fmt.Errorf("invalid page token: %s", pageToken)
+			return nil, nil, fmt.Errorf("invalid page token: %s", *pageToken)
 		}
 
 		if token.TableNamespace != ns {
-			return nil, nil, fmt.Errorf("invalid page token: %s", pageToken)
+			return nil, nil, fmt.Errorf("invalid page token: %s", *pageToken)
 		}
 
 		query = query.Where("table_name > ?", token.TableName)

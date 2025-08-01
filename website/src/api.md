@@ -24,14 +24,14 @@
 - Create and list namespaces.
 - Create, load, and drop tables
 
-Currently only rest catalog has been implemented, and other catalogs are under active development. Here is an
+Currently, only the REST catalog has been implemented, and other catalogs are under active development. Here is an
 example of how to create a `RestCatalog`:
 
 ```go
 import (
     "context"
-    "github.com/xixipi-lining/iceberg-go/catalog"
-    "github.com/xixipi-lining/iceberg-go/catalog/rest"
+    "github.com/apache/iceberg-go/catalog"
+    "github.com/apache/iceberg-go/catalog/rest"
 )
 
 // Create a REST catalog
@@ -42,7 +42,7 @@ if err != nil {
 }
 ```
 
-You can run following code to list all root namespaces:
+You can run the following code to list all root namespaces:
 
 ```go
 // List all root namespaces
@@ -56,7 +56,7 @@ for _, ns := range namespaces {
 }
 ```
 
-Then you can run following code to create namespace:
+Then you can run the following code to create namespace:
 
 ```go
 // Create a namespace
@@ -75,8 +75,8 @@ You can also use SQL-based catalogs:
 
 ```go
 import (
-    "github.com/xixipi-lining/iceberg-go/catalog"
-    "github.com/xixipi-lining/iceberg-go/io"
+    "github.com/apache/iceberg-go/catalog"
+    "github.com/apache/iceberg-go/io"
 )
 
 // Create a SQLite catalog
@@ -101,7 +101,7 @@ For AWS Glue integration:
 
 ```go
 import (
-    "github.com/xixipi-lining/iceberg-go/catalog/glue"
+    "github.com/apache/iceberg-go/catalog/glue"
     "github.com/aws/aws-sdk-go-v2/config"
 )
 
@@ -114,7 +114,7 @@ if err != nil {
 // Create Glue catalog
 cat := glue.NewCatalog(glue.WithAwsConfig(awsCfg))
 
-// Create table in Glue
+// Create a table in Glue
 tableIdent := catalog.ToIdentifier("my_database", "my_table")
 tbl, err := cat.CreateTable(
     context.Background(),
@@ -131,13 +131,13 @@ if err != nil {
 
 After creating `Catalog`, we can manipulate tables through `Catalog`.
 
-You can use following code to create a table:
+You can use the following code to create a table:
 
 ```go
 import (
-    "github.com/xixipi-lining/iceberg-go"
-    "github.com/xixipi-lining/iceberg-go/catalog"
-    "github.com/xixipi-lining/iceberg-go/table"
+    "github.com/apache/iceberg-go"
+    "github.com/apache/iceberg-go/catalog"
+    "github.com/apache/iceberg-go/table"
 )
 
 // Create a simple schema
@@ -147,10 +147,10 @@ schema := iceberg.NewSchemaWithIdentifiers(1, []int{2},
     iceberg.NestedField{ID: 3, Name: "baz", Type: iceberg.PrimitiveTypes.Bool, Required: false},
 )
 
-// Create table identifier
+// Create a table identifier
 tableIdent := catalog.ToIdentifier("my_namespace", "my_table")
 
-// Create table with optional properties
+// Create a table with optional properties
 tbl, err := cat.CreateTable(
     context.Background(),
     tableIdent,
@@ -267,7 +267,7 @@ fmt.Printf("Number of fields: %d\n", schema.NumFields())
 props := tbl.Properties()
 fmt.Printf("Owner: %s\n", props["owner"])
 
-// Access current snapshot
+// Access the current snapshot
 if snapshot := tbl.CurrentSnapshot(); snapshot != nil {
     fmt.Printf("Current snapshot ID: %d\n", snapshot.SnapshotID)
     fmt.Printf("Snapshot timestamp: %d\n", snapshot.TimestampMs)
@@ -285,8 +285,8 @@ You can create tables with partitioning:
 
 ```go
 import (
-    "github.com/xixipi-lining/iceberg-go"
-    "github.com/xixipi-lining/iceberg-go/catalog"
+    "github.com/apache/iceberg-go"
+    "github.com/apache/iceberg-go/catalog"
 )
 
 // Create schema
@@ -296,12 +296,12 @@ schema := iceberg.NewSchemaWithIdentifiers(1, []int{1},
     iceberg.NestedField{ID: 3, Name: "date", Type: iceberg.PrimitiveTypes.Date, Required: false},
 )
 
-// Create partition spec
+// Create a partition spec
 partitionSpec := iceberg.NewPartitionSpec(
     iceberg.PartitionField{SourceID: 3, FieldID: 1000, Transform: iceberg.IdentityTransform{}, Name: "date"},
 )
 
-// Create table with partitioning
+// Create a table with partitioning
 tbl, err := cat.CreateTable(
     context.Background(),
     tableIdent,

@@ -36,13 +36,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/apache/iceberg-go"
+	"github.com/apache/iceberg-go/catalog"
+	iceio "github.com/apache/iceberg-go/io"
+	"github.com/apache/iceberg-go/table"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/aws/aws-sdk-go-v2/config"
-	"github.com/xixipi-lining/iceberg-go"
-	"github.com/xixipi-lining/iceberg-go/catalog"
-	iceio "github.com/xixipi-lining/iceberg-go/io"
-	"github.com/xixipi-lining/iceberg-go/table"
 )
 
 var _ catalog.Catalog = (*Catalog)(nil)

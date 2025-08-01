@@ -33,7 +33,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow/decimal"
 	"github.com/apache/arrow-go/v18/arrow/decimal128"
-	"github.com/xixipi-lining/iceberg-go"
+	"github.com/apache/iceberg-go"
 	"golang.org/x/sync/errgroup"
 )
 

@@ -22,7 +22,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/xixipi-lining/iceberg-go"
+	"github.com/apache/iceberg-go"
 )
 
 // UpdateSpec implements a builder for evolving a table's partition specification.

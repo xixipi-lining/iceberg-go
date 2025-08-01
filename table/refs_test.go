@@ -21,8 +21,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/apache/iceberg-go/table"
 	"github.com/stretchr/testify/assert"
-	"github.com/xixipi-lining/iceberg-go/table"
 )
 
 func TestInvalidSnapshotRefType(t *testing.T) {

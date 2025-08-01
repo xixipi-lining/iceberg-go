@@ -26,13 +26,13 @@ import (
 	"slices"
 	"strconv"
 
+	"github.com/apache/iceberg-go/utils"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/smithy-go/auth/bearer"
-	"github.com/xixipi-lining/iceberg-go/utils"
 	"gocloud.dev/blob"
 	"gocloud.dev/blob/s3blob"
 )

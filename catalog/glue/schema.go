@@ -22,9 +22,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/apache/iceberg-go"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/glue/types"
-	"github.com/xixipi-lining/iceberg-go"
 )
 
 // schemaToGlueColumns converts an Iceberg schema to a list of Glue columns.

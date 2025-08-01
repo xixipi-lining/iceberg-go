@@ -32,14 +32,14 @@ import (
 	"github.com/apache/arrow-go/v18/arrow/array"
 	"github.com/apache/arrow-go/v18/arrow/memory"
 	"github.com/apache/arrow-go/v18/parquet/pqarrow"
+	"github.com/apache/iceberg-go"
+	"github.com/apache/iceberg-go/catalog"
+	"github.com/apache/iceberg-go/catalog/internal"
+	sqlcat "github.com/apache/iceberg-go/catalog/sql"
+	"github.com/apache/iceberg-go/table"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
 	"github.com/uptrace/bun/driver/sqliteshim"
-	"github.com/xixipi-lining/iceberg-go"
-	"github.com/xixipi-lining/iceberg-go/catalog"
-	"github.com/xixipi-lining/iceberg-go/catalog/internal"
-	sqlcat "github.com/xixipi-lining/iceberg-go/catalog/sql"
-	"github.com/xixipi-lining/iceberg-go/table"
 )
 
 var tableSchemaNested = iceberg.NewSchemaWithIdentifiers(1,
