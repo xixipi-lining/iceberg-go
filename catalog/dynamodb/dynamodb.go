@@ -799,3 +799,77 @@ func (c *Catalog) encodePageToken(data map[string]types.AttributeValue) (string,
 func (c *Catalog) decodedPageToken(token string) (map[string]types.AttributeValue, error) {
 	return attributevalue.UnmarshalMapJSON([]byte(token))
 }
+
+func (c *Catalog) MultiTableCommit(ctx context.Context, commits []catalog.MultiTableCommit, syncTo catalog.FollowerCatalog) error {
+	transactItems := make([]types.TransactWriteItem, len(commits))
+
+	stagedTables := make([]*table.StagedTable, len(commits))
+
+	for i, commit := range commits {
+		nsIdent := catalog.NamespaceFromIdent(commit.Table.Identifier())
+		tblIdent := catalog.TableNameFromIdent(commit.Table.Identifier())
+
+		current, err := c.LoadTable(ctx, commit.Table.Identifier(), nil)
+		if err != nil && !errors.Is(err, catalog.ErrNoSuchTable) {
+			return err
+		}
+
+		staged, err := internal.UpdateAndStageTable(ctx, commit.Table, commit.Table.Identifier(), commit.Requirements, commit.Updates, c)
+		if err != nil {
+			return err
+		}
+		if current != nil && staged.Metadata().Equals(current.Metadata()) {
+			continue
+		}
+
+		if err := internal.WriteMetadata(ctx, staged.Metadata(), staged.MetadataLocation(), staged.Properties()); err != nil {
+			return err
+		}
+
+		expr, err := expression.NewBuilder().WithCondition(
+			expression.Equal(expression.Name(dynamodbColumnMetadataLocation), expression.Value(current.MetadataLocation())),
+		).WithUpdate(
+			expression.Set(expression.Name(dynamodbColumnMetadataLocation), expression.Value(staged.MetadataLocation())),
+		).WithUpdate(
+			expression.Set(expression.Name(dynamodbColumnPreviousMetadataLocation), expression.Value(current.MetadataLocation())),
+		).WithUpdate(
+			expression.Set(expression.Name(dynamodbColumnUpdatedAt), expression.Value(time.Now())),
+		).Build()
+		if err != nil {
+			return fmt.Errorf("failed to build expression: %w", err)
+		}
+
+		stagedTables[i] = staged
+
+		transactItems[i] = types.TransactWriteItem{
+			Update: &types.Update{
+				TableName: aws.String(c.tableName),
+				Key: (&dynamodbIcebergTable{
+					TableNamespace: strings.Join(nsIdent, "."),
+					TableName:      tblIdent,
+				}).Key(),
+				ConditionExpression:       expr.Condition(),
+				UpdateExpression:          expr.Update(),
+				ExpressionAttributeNames:  expr.Names(),
+				ExpressionAttributeValues: expr.Values(),
+			},
+		}
+	}
+
+	_, err := c.dynamodb.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: transactItems,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to commit tables: %w", err)
+	}
+
+	if syncTo != nil {
+		for _, staged := range stagedTables {
+			if err := syncTo.CommitTableUsingStaged(ctx, staged); err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
+}

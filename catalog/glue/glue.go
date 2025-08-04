@@ -819,3 +819,25 @@ func prepareProperties(icebergProperties iceberg.Properties, newMetadataLocation
 
 	return glueProperties
 }
+
+func (c *Catalog) CommitTableUsingStaged(ctx context.Context, staged *table.StagedTable) error {
+	database, tableName, err := identifierToGlueTable(staged.Identifier())
+	if err != nil {
+		return err
+	}
+
+	tableInput, err := buildGlueTableInput(ctx, database, tableName, staged, c)
+	if err != nil {
+		return err
+	}
+
+	_, err = c.glueSvc.UpdateTable(ctx, &glue.UpdateTableInput{
+		CatalogId:    c.catalogId,
+		DatabaseName: aws.String(database),
+		TableInput:   tableInput,
+	})
+	if err != nil {
+		return err
+	}
+	return nil
+}
