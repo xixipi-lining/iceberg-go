@@ -214,13 +214,3 @@ func getUpdatedPropsAndUpdateSummary(currentProps iceberg.Properties, removals [
 
 	return updatedProps, summary, nil
 }
-
-type MultiTableCommit struct {
-	Table        *table.Table
-	Requirements []table.Requirement
-	Updates      []table.Update
-}
-
-type FollowerCatalog interface {
-	CommitTableUsingStaged(ctx context.Context, staged *table.StagedTable) error
-}

@@ -800,7 +800,7 @@ func (c *Catalog) decodedPageToken(token string) (map[string]types.AttributeValu
 	return attributevalue.UnmarshalMapJSON([]byte(token))
 }
 
-func (c *Catalog) MultiTableCommit(ctx context.Context, commits []catalog.MultiTableCommit, syncTo catalog.FollowerCatalog) error {
+func (c *Catalog) CommitTables(ctx context.Context, commits []table.TableCommit) error {
 	transactItems := make([]types.TransactWriteItem, len(commits))
 
 	stagedTables := make([]*table.StagedTable, len(commits))
@@ -861,14 +861,6 @@ func (c *Catalog) MultiTableCommit(ctx context.Context, commits []catalog.MultiT
 	})
 	if err != nil {
 		return fmt.Errorf("failed to commit tables: %w", err)
-	}
-
-	if syncTo != nil {
-		for _, staged := range stagedTables {
-			if err := syncTo.CommitTableUsingStaged(ctx, staged); err != nil {
-				return err
-			}
-		}
 	}
 
 	return nil

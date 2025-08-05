@@ -1234,3 +1234,40 @@ func (r *Catalog) CreateView(ctx context.Context, identifier table.Identifier, s
 
 	return nil
 }
+
+func (r *Catalog) CommitTables(ctx context.Context, commits []table.TableCommit) error {
+	type payload struct {
+		Identifier   identifier          `json:"identifier"`
+		Requirements []table.Requirement `json:"requirements"`
+		Updates      []table.Update      `json:"updates"`
+	}
+
+	payloads := make([]payload, len(commits))
+	for i, commit := range commits {
+		if commit.Table == nil {
+			continue
+		}
+		ident := commit.Table.Identifier()
+		_, tblName, err := splitIdentForPath(ident)
+		if err != nil {
+			return err
+		}
+		resIdentifier := identifier{
+			Namespace: catalog.NamespaceFromIdent(ident),
+			Name:      tblName,
+		}
+
+		payloads[i] = payload{
+			Identifier:   resIdentifier,
+			Requirements: commit.Requirements,
+			Updates:      commit.Updates,
+		}
+	}
+
+	_, err := doPost[[]payload, struct{}](ctx, r.baseURI, []string{"multi-tables-commit"}, payloads, r.cl,
+		map[int]error{http.StatusNotFound: catalog.ErrNoSuchTable, http.StatusConflict: ErrCommitFailed})
+	if err != nil {
+		return err
+	}
+	return nil
+}

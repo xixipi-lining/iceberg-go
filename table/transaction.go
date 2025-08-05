@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"runtime"
 	"slices"
 	"sync"
@@ -422,4 +423,82 @@ func (s *StagedTable) Refresh(ctx context.Context) (*Table, error) {
 
 func (s *StagedTable) Scan(opts ...ScanOption) *Scan {
 	panic(fmt.Errorf("%w: cannot scan a staged table", ErrInvalidOperation))
+}
+
+type MultiTableCommitCatalog interface {
+	CommitTables(ctx context.Context, commits []TableCommit) error
+}
+type MultblTransaction struct {
+	tbls []Identifier
+	txns []*Transaction
+
+	cat MultiTableCommitCatalog
+}
+
+type TableCommit struct {
+	Table        *Table
+	Requirements []Requirement
+	Updates      []Update
+}
+
+func (m *MultblTransaction) Add(txn *Transaction) error {
+	_, ok := txn.tbl.cat.(MultiTableCommitCatalog)
+	if !ok {
+		return fmt.Errorf("%w: catalog does not support multi-table commits", ErrInvalidOperation)
+	}
+
+	if m.cat == nil {
+		m.cat = txn.tbl.cat.(MultiTableCommitCatalog)
+	} else if reflect.ValueOf(txn.tbl.cat).Pointer() != reflect.ValueOf(m.cat).Pointer() {
+		return fmt.Errorf("%w: all tables must be in the same catalog", ErrInvalidOperation)
+	}
+
+	identifier := txn.tbl.identifier
+	for _, tbl := range m.tbls {
+		if slices.Equal(identifier, tbl) {
+			return fmt.Errorf("%w: table already added", ErrInvalidOperation)
+		}
+	}
+
+	m.tbls = append(m.tbls, identifier)
+	m.txns = append(m.txns, txn)
+
+	return nil
+}
+
+func (m *MultblTransaction) Commit(ctx context.Context) error {
+	commits := make([]TableCommit, 0, len(m.txns))
+	for _, txn := range m.txns {
+		commit, err := m.getTableCommit(txn)
+		if err != nil {
+			return err
+		}
+		if commit.Table == nil {
+			continue
+		}
+		commits = append(commits, commit)
+	}
+
+	return m.cat.CommitTables(ctx, commits)
+}
+
+func (m *MultblTransaction) getTableCommit(txn *Transaction) (TableCommit, error) {
+	txn.mx.Lock()
+	defer txn.mx.Unlock()
+	if txn.committed {
+		return TableCommit{}, errors.New("transaction has already been committed")
+	}
+
+	txn.committed = true
+
+	if len(txn.meta.updates) > 0 {
+		txn.reqs = append(txn.reqs, AssertTableUUID(txn.meta.uuid))
+		return TableCommit{
+			Table:        txn.tbl,
+			Requirements: txn.reqs,
+			Updates:      txn.meta.updates,
+		}, nil
+	}
+
+	return TableCommit{}, nil
 }
