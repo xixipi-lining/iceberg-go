@@ -178,7 +178,16 @@ func (createNameMappingVisitor) Map(m MapType, keyResult, valResult []MappedFiel
 }
 
 func (createNameMappingVisitor) Primitive(_ PrimitiveType) []MappedField {
-	return []MappedField{}
+	return nil
+}
+
+func CreateNameMappingFromSchema(schema *Schema) (NameMapping, error) {
+	result, err := Visit(schema, createNameMappingVisitor{})
+	if err != nil {
+		return nil, err
+	}
+
+	return NameMapping(result), nil
 }
 
 func UpdateNameMapping(nameMapping NameMapping, updates map[int]NestedField, adds map[int][]NestedField) (NameMapping, error) {
