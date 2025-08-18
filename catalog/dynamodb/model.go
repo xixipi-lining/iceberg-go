@@ -21,6 +21,7 @@ const (
 	dynamodbColumnProperties               = "properties"
 
 	dynamodbNamespace = "NAMESPACE"
+	dynamodbSidecar   = "SIDECAR"
 
 	dynamodbNamespaceGSI = "namespace-identifier"
 )
@@ -153,7 +154,7 @@ func (m *dynamodbIcebergTable) UnmarshalMap(avMap map[string]types.AttributeValu
 	if err != nil {
 		return err
 	}
-	if model.Identifier == dynamodbNamespace {
+	if model.Identifier == dynamodbNamespace || model.Identifier == dynamodbSidecar {
 		return ErrNamespaceIsNotATableIdentifier
 	}
 	m.TableNamespace = model.Namespace
@@ -180,5 +181,43 @@ func (m *dynamodbIcebergTable) Valid() error {
 	if m.CreatedAt.IsZero() {
 		return fmt.Errorf("created at is zero")
 	}
+	return nil
+}
+
+type dynamodbKVSidecarItem struct {
+	Name  string
+	Value string
+}
+
+func (m *dynamodbKVSidecarItem) Key() map[string]types.AttributeValue {
+	return map[string]types.AttributeValue{
+		dynamodbColumnIdentifier: &types.AttributeValueMemberS{Value: dynamodbSidecar},
+		dynamodbColumnNamespace:  &types.AttributeValueMemberS{Value: m.Name},
+	}
+}
+
+func (m *dynamodbKVSidecarItem) MarshalMap() (map[string]types.AttributeValue, error) {
+	return attributevalue.MarshalMap(dynamodbModel{
+		Identifier: dynamodbSidecar,
+		Namespace:  m.Name,
+		Properties: map[string]string{
+			m.Name: m.Value,
+		},
+	})
+}
+
+func (m *dynamodbKVSidecarItem) UnmarshalMap(avMap map[string]types.AttributeValue) error {
+	var model dynamodbModel
+
+	err := attributevalue.UnmarshalMap(avMap, &model)
+	if err != nil {
+		return err
+	}
+	m.Name = model.Namespace
+	value, ok := model.Properties[m.Name]
+	if !ok {
+		return fmt.Errorf("property %s not found", m.Name)
+	}
+	m.Value = value
 	return nil
 }
