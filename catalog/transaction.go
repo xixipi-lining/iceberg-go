@@ -39,5 +39,7 @@ type FollowerCatalog interface {
 
 type TransactionCatalog interface {
 	Catalog
+	SetKVSidecar(ctx context.Context, key, value string) error
+	GetKVSidecar(ctx context.Context, key string) (string, error)
 	Transaction(ctx context.Context, reqs []TransactionRequest, follwer ...FollowerCatalog) error
 }
