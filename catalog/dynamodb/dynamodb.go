@@ -422,7 +422,7 @@ func (c *Catalog) stageCreateTable(ctx context.Context, identifier table.Identif
 	return &staged, nil
 }
 
-func (c *Catalog) getCreateTablePutItem(ctx context.Context, staged *table.StagedTable) (*dynamodb.PutItemInput, error) {
+func (c *Catalog) getCreateTablePutItem(staged *table.StagedTable) (*dynamodb.PutItemInput, error) {
 	item, err := (&dynamodbIcebergTable{
 		TableNamespace:   strings.Join(catalog.NamespaceFromIdent(staged.Identifier()), "."),
 		TableName:        catalog.TableNameFromIdent(staged.Identifier()),
@@ -468,7 +468,7 @@ func (c *Catalog) CreateTable(ctx context.Context, identifier table.Identifier, 
 		return nil, err
 	}
 
-	putItem, err := c.getCreateTablePutItem(ctx, staged)
+	putItem, err := c.getCreateTablePutItem(staged)
 	if err != nil {
 		return nil, err
 	}
@@ -554,7 +554,7 @@ func (c *Catalog) stageCommitTable(ctx context.Context, tbl *table.Table, requir
 	return current, staged, nil
 }
 
-func (c *Catalog) getCommitTableUpdateItem(ctx context.Context, current *table.Table, staged *table.StagedTable) (*dynamodb.UpdateItemInput, error) {
+func (c *Catalog) getCommitTableUpdateItem(current *table.Table, staged *table.StagedTable) (*dynamodb.UpdateItemInput, error) {
 	expr, err := expression.NewBuilder().WithCondition(
 		expression.Equal(expression.Name(dynamodbColumnMetadataLocation), expression.Value(current.MetadataLocation())),
 	).WithUpdate(
@@ -590,7 +590,7 @@ func (c *Catalog) CommitTable(ctx context.Context, tbl *table.Table, requirement
 		return nil, "", err
 	}
 
-	updateItem, err := c.getCommitTableUpdateItem(ctx, current, staged)
+	updateItem, err := c.getCommitTableUpdateItem(current, staged)
 	if err != nil {
 		return nil, "", err
 	}
@@ -833,151 +833,3 @@ func (c *Catalog) decodedPageToken(token string) (map[string]types.AttributeValu
 	return attributevalue.UnmarshalMapJSON([]byte(token))
 }
 
-func (c *Catalog) SetKVSidecar(ctx context.Context, key, value string) error {
-	item, err := (&dynamodbKVSidecarItem{
-		Name:  key,
-		Value: value,
-	}).MarshalMap()
-	if err != nil {
-		return fmt.Errorf("failed to marshal item: %w", err)
-	}
-
-	_, err = c.dynamodb.PutItem(ctx, &dynamodb.PutItemInput{
-		Item:      item,
-		TableName: aws.String(c.tableName),
-	})
-	if err != nil {
-		return fmt.Errorf("failed to put item: %w", err)
-	}
-
-	return nil
-}
-
-func (c *Catalog) GetKVSidecar(ctx context.Context, key string) (string, error) {
-	res, err := c.dynamodb.GetItem(ctx, &dynamodb.GetItemInput{
-		Key: (&dynamodbKVSidecarItem{
-			Name: key,
-		}).Key(),
-		TableName: aws.String(c.tableName),
-	})
-	if err != nil {
-		return "", fmt.Errorf("failed to get item: %w", err)
-	}
-
-	item := &dynamodbKVSidecarItem{}
-	if err := item.UnmarshalMap(res.Item); err != nil {
-		return "", fmt.Errorf("failed to unmarshal item: %w", err)
-	}
-
-	return item.Value, nil
-}
-
-type CreateTableRequest struct {
-	Identifier table.Identifier
-	Schema     *iceberg.Schema
-	opts       []catalog.CreateTableOpt
-}
-
-type CommitTableRequest struct {
-	Table        *table.Table
-	Requirements []table.Requirement
-	updates      []table.Update
-}
-
-type SetKVSidecarRequest struct {
-	Key   string
-	Value string
-}
-
-type TransactionRequest interface {
-	transactionRequest()
-}
-
-func (c *CreateTableRequest) transactionRequest()  {}
-func (c *CommitTableRequest) transactionRequest()  {}
-func (c *SetKVSidecarRequest) transactionRequest() {}
-
-func (c *Catalog) Transaction(ctx context.Context, reqs ...TransactionRequest) error {
-	transactItems := make([]types.TransactWriteItem, len(reqs))
-
-	for _, req := range reqs {
-		switch req := req.(type) {
-		case *CreateTableRequest:
-			ns := strings.Join(catalog.NamespaceFromIdent(req.Identifier), ".")
-			exists, err := c.namespaceExists(ctx, ns)
-			if err != nil {
-				return err
-			}
-			if !exists {
-				return fmt.Errorf("%w: %s", catalog.ErrNoSuchNamespace, ns)
-			}
-
-			staged, err := c.stageCreateTable(ctx, req.Identifier, req.Schema, req.opts...)
-			if err != nil {
-				return err
-			}
-
-			item, err := c.getCreateTablePutItem(ctx, staged)
-			if err != nil {
-				return err
-			}
-
-			transactItems = append(transactItems, types.TransactWriteItem{
-				Put: &types.Put{
-					TableName:                 item.TableName,
-					Item:                      item.Item,
-					ConditionExpression:       item.ConditionExpression,
-					ExpressionAttributeNames:  item.ExpressionAttributeNames,
-					ExpressionAttributeValues: item.ExpressionAttributeValues,
-				},
-			})
-		case *CommitTableRequest:
-			current, staged, err := c.stageCommitTable(ctx, req.Table, req.Requirements, req.updates)
-			if err != nil {
-				if errors.Is(err, ErrNoChanges) {
-					continue
-				}
-				return err
-			}
-
-			updateItem, err := c.getCommitTableUpdateItem(ctx, current, staged)
-			if err != nil {
-				return err
-			}
-
-			transactItems = append(transactItems, types.TransactWriteItem{
-				Update: &types.Update{
-					TableName:                 updateItem.TableName,
-					Key:                       updateItem.Key,
-					ConditionExpression:       updateItem.ConditionExpression,
-					UpdateExpression:          updateItem.UpdateExpression,
-					ExpressionAttributeNames:  updateItem.ExpressionAttributeNames,
-					ExpressionAttributeValues: updateItem.ExpressionAttributeValues,
-				},
-			})
-		case *SetKVSidecarRequest:
-			item, err := (&dynamodbKVSidecarItem{
-				Name:  req.Key,
-				Value: req.Value,
-			}).MarshalMap()
-			if err != nil {
-				return fmt.Errorf("failed to marshal item: %w", err)
-			}
-			transactItems = append(transactItems, types.TransactWriteItem{
-				Put: &types.Put{
-					TableName: aws.String(c.tableName),
-					Item:      item,
-				},
-			})
-		}
-	}
-
-	_, err := c.dynamodb.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
-		TransactItems: transactItems,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to transact: %w", err)
-	}
-
-	return nil
-}
