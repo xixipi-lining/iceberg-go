@@ -2,12 +2,15 @@ package rest
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 
 	"github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
 	"github.com/apache/iceberg-go/table"
 )
+
+var _ catalog.TransactionCatalog = (*Catalog)(nil)
 
 type kv struct {
 	Key string `json:"key"`
@@ -54,7 +57,11 @@ type transactionRequest struct {
 	SetKVSidecar *kv `json:"set_kv_sidecar"`
 }
 
-func (r *Catalog) Transaction(ctx context.Context, reqs []catalog.TransactionRequest) error {
+func (r *Catalog) Transaction(ctx context.Context, reqs []catalog.TransactionRequest, followers ...catalog.FollowerCatalog) error {
+	if len(followers) != 0 {
+		return fmt.Errorf("followers are not supported for REST catalog")
+	}
+
 	payload := make([]transactionRequest, len(reqs))
 	for i, req := range reqs {
 		switch req := req.(type) {
