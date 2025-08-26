@@ -233,6 +233,7 @@ func TestGlueGetTableCaseInsensitive(t *testing.T) {
 					tableParamTableType:        tc.tableType,
 					tableParamMetadataLocation: "s3://test-bucket/test_table/metadata/abc123-123.metadata.json",
 				},
+				TableType: aws.String("EXTERNAL_TABLE"),
 			}
 
 			mockGlueSvc.On("GetTable", mock.Anything, &glue.GetTableInput{
@@ -717,6 +718,7 @@ func TestGlueRenameTable(t *testing.T) {
 				tableParamTableType:        glueTypeIceberg,
 				tableParamMetadataLocation: "s3://test-bucket/test_table/metadata/abc123-123.metadata.json",
 			},
+			TableType:         aws.String("EXTERNAL_TABLE"),
 			Owner:             aws.String("owner"),
 			Description:       aws.String("description"),
 			StorageDescriptor: &types.StorageDescriptor{},
@@ -729,6 +731,7 @@ func TestGlueRenameTable(t *testing.T) {
 		TableInput: &types.TableInput{
 			Name:        aws.String("new_test_table"),
 			Owner:       aws.String("owner"),
+			TableType:   aws.String("EXTERNAL_TABLE"),
 			Description: aws.String("description"),
 			Parameters: map[string]string{
 				tableParamTableType:        glueTypeIceberg,
@@ -755,6 +758,7 @@ func TestGlueRenameTable(t *testing.T) {
 				tableParamTableType:        glueTypeIceberg,
 				tableParamMetadataLocation: "s3://test-bucket/test_table/metadata/abc123-123.metadata.json",
 			},
+			TableType:         aws.String("EXTERNAL_TABLE"),
 			Owner:             aws.String("owner"),
 			Description:       aws.String("description"),
 			StorageDescriptor: &types.StorageDescriptor{},
@@ -813,7 +817,8 @@ func TestGlueRenameTable_DeleteTableFailureRollback(t *testing.T) {
 		Name:         aws.String("test_table"),
 	}, mock.Anything).Return(&glue.GetTableOutput{
 		Table: &types.Table{
-			Name: aws.String("test_table"),
+			Name:      aws.String("test_table"),
+			TableType: aws.String("EXTERNAL_TABLE"),
 			Parameters: map[string]string{
 				tableParamTableType:        glueTypeIceberg,
 				tableParamMetadataLocation: "s3://test-bucket/test_table/metadata/abc123-123.metadata.json",
@@ -829,6 +834,7 @@ func TestGlueRenameTable_DeleteTableFailureRollback(t *testing.T) {
 		DatabaseName: aws.String("test_database"),
 		TableInput: &types.TableInput{
 			Name:              aws.String("new_test_table"),
+			TableType:         aws.String("EXTERNAL_TABLE"),
 			Owner:             aws.String("owner"),
 			Description:       aws.String("description"),
 			Parameters:        map[string]string{tableParamTableType: glueTypeIceberg, tableParamMetadataLocation: "s3://test-bucket/test_table/metadata/abc123-123.metadata.json"},
@@ -997,6 +1003,41 @@ func TestGlueCreateTableInvalidMetadataRollback(t *testing.T) {
 		assert.NoError(err)
 	}
 	assert.False(found, "expected table to be rolled back and not exist in the catalog")
+}
+
+func TestGlueCreateTableRollbackOnInvalidMetadata(t *testing.T) {
+	assert := require.New(t)
+	mockGlueSvc := &mockGlueClient{}
+	schema := iceberg.NewSchemaWithIdentifiers(1, []int{1},
+		iceberg.NestedField{ID: 1, Name: "id", Type: iceberg.Int64Type{}, Required: true},
+		iceberg.NestedField{ID: 2, Name: "name", Type: iceberg.StringType{}, Required: true},
+	)
+	mockGlueSvc.On("CreateTable", mock.Anything, mock.Anything, mock.Anything).Return(&glue.CreateTableOutput{}, nil)
+	mockGlueSvc.On("GetTable", mock.Anything, &glue.GetTableInput{
+		DatabaseName: aws.String("test_database"),
+		Name:         aws.String("test_rollback_table"),
+	}, mock.Anything).Return(&glue.GetTableOutput{
+		Table: &types.Table{
+			Name: aws.String("test_rollback_table"),
+		},
+	}, nil)
+	mockGlueSvc.On("DeleteTable", mock.Anything, &glue.DeleteTableInput{
+		DatabaseName: aws.String("test_database"),
+		Name:         aws.String("test_rollback_table"),
+	}, mock.Anything).Return(&glue.DeleteTableOutput{}, nil)
+	glueCatalog := &Catalog{
+		glueSvc: mockGlueSvc,
+		awsCfg:  &aws.Config{},
+	}
+	_, err := glueCatalog.CreateTable(context.TODO(),
+		TableIdentifier("test_database", "test_rollback_table"),
+		schema,
+		catalog.WithLocation("s3://non-existent-test-bucket"))
+	// Should fail because LoadTable will fail to load the nonexistent metadata
+	assert.Error(err)
+	mockGlueSvc.AssertNotCalled(t, "CreateTable", mock.Anything, mock.Anything, mock.Anything)
+	mockGlueSvc.AssertNotCalled(t, "DeleteTable", mock.Anything, mock.Anything, mock.Anything)
+	mockGlueSvc.AssertNotCalled(t, "GetTable", mock.Anything, mock.Anything, mock.Anything)
 }
 
 func TestRegisterTableMetadataNotFound(t *testing.T) {
