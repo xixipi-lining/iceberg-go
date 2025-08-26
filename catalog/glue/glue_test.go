@@ -797,7 +797,6 @@ func TestGlueRenameTable(t *testing.T) {
 }
 
 func TestGlueRenameTable_DeleteTableFailureRollback(t *testing.T) {
-	fmt.Printf("DEBUG: Test starting\n")
 	assert := require.New(t)
 
 	mockGlueSvc := &mockGlueClient{}
@@ -861,9 +860,10 @@ func TestGlueRenameTable_DeleteTableFailureRollback(t *testing.T) {
 	renamedTable, err := glueCatalog.RenameTable(context.TODO(), TableIdentifier("test_database", "test_table"), TableIdentifier("test_database", "new_test_table"))
 	assert.Error(err)
 	assert.Nil(renamedTable)
-	mockGlueSvc.AssertCalled(t, "DeleteTable", mock.Anything, mock.MatchedBy(func(arg *glue.DeleteTableInput) bool {
-		return arg != nil && aws.ToString(arg.DatabaseName) == "test_database" && aws.ToString(arg.Name) == "new_test_table"
-	}), mock.Anything)
+	mockGlueSvc.AssertCalled(t, "DeleteTable", mock.Anything, &glue.DeleteTableInput{
+		DatabaseName: aws.String("test_database"),
+		Name:         aws.String("new_test_table"),
+	}, mock.Anything)
 }
 
 func TestGlueListTablesIntegration(t *testing.T) {
