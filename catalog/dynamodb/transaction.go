@@ -99,7 +99,7 @@ func (c *Catalog) Transaction(ctx context.Context, reqs []catalog.TransactionReq
 				},
 			})
 		case *catalog.CommitTableRequest:
-			current, staged, err := c.stageCommitTable(ctx, req.Table, req.Requirements, req.Updates)
+			current, staged, err := c.stageCommitTable(ctx, req.Identifier, req.Requirements, req.Updates)
 			if err != nil {
 				if errors.Is(err, ErrNoChanges) {
 					continue

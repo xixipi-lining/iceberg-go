@@ -14,7 +14,7 @@ type CreateTableRequest struct {
 }
 
 type CommitTableRequest struct {
-	Table        *table.Table
+	Identifier   table.Identifier
 	Requirements []table.Requirement
 	Updates      []table.Update
 }

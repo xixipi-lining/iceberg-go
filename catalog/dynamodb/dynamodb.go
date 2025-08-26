@@ -477,12 +477,12 @@ func (c *Catalog) CreateTable(ctx context.Context, identifier table.Identifier, 
 	if err != nil {
 		var conditionalCheckFailedException *types.ConditionalCheckFailedException
 		if errors.As(err, &conditionalCheckFailedException) {
-			return nil, fmt.Errorf("%w: %s", catalog.ErrTableAlreadyExists, staged.Identifier())
+			return nil, fmt.Errorf("%w: %s", catalog.ErrTableAlreadyExists, identifier)
 		}
 		return nil, fmt.Errorf("failed to create table: %w", err)
 	}
 
-	return c.LoadTable(ctx, identifier, staged.Properties())
+	return c.LoadTable(ctx, identifier)
 }
 
 func (c *Catalog) getTable(ctx context.Context, identifier table.Identifier) (*dynamodbIcebergTable, error) {
@@ -517,28 +517,23 @@ func (c *Catalog) getTable(ctx context.Context, identifier table.Identifier) (*d
 	return &tbl, nil
 }
 
-func (c *Catalog) LoadTable(ctx context.Context, identifier table.Identifier, props iceberg.Properties) (*table.Table, error) {
-	if props == nil {
-		props = iceberg.Properties{}
-	}
-
+func (c *Catalog) LoadTable(ctx context.Context, identifier table.Identifier) (*table.Table, error) {
 	tbl, err := c.getTable(ctx, identifier)
 	if err != nil {
 		return nil, err
 	}
 
 	tblProps := maps.Clone(c.props)
-	maps.Copy(props, tblProps)
 
 	return table.NewFromLocation(ctx, identifier, tbl.MetadataLocation, io.LoadFSFunc(tblProps, tbl.MetadataLocation), c)
 }
 
-func (c *Catalog) stageCommitTable(ctx context.Context, tbl *table.Table, requirements []table.Requirement, updates []table.Update) (*table.Table, *table.StagedTable, error) {
-	current, err := c.LoadTable(ctx, tbl.Identifier(), nil)
+func (c *Catalog) stageCommitTable(ctx context.Context, identifier table.Identifier, requirements []table.Requirement, updates []table.Update) (*table.Table, *table.StagedTable, error) {
+	current, err := c.LoadTable(ctx, identifier)
 	if err != nil && !errors.Is(err, catalog.ErrNoSuchTable) {
 		return nil, nil, err
 	}
-	staged, err := internal.UpdateAndStageTable(ctx, tbl, tbl.Identifier(), requirements, updates, c)
+	staged, err := internal.UpdateAndStageTable(ctx, current, identifier, requirements, updates, c)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -581,8 +576,8 @@ func (c *Catalog) getCommitTableUpdateItem(current *table.Table, staged *table.S
 
 }
 
-func (c *Catalog) CommitTable(ctx context.Context, tbl *table.Table, requirements []table.Requirement, updates []table.Update) (table.Metadata, string, error) {
-	current, staged, err := c.stageCommitTable(ctx, tbl, requirements, updates)
+func (c *Catalog) CommitTable(ctx context.Context, identifier table.Identifier, requirements []table.Requirement, updates []table.Update) (table.Metadata, string, error) {
+	current, staged, err := c.stageCommitTable(ctx, identifier, requirements, updates)
 	if err != nil {
 		if errors.Is(err, ErrNoChanges) {
 			return current.Metadata(), current.MetadataLocation(), nil
@@ -710,7 +705,7 @@ func (c *Catalog) RenameTable(ctx context.Context, from, to table.Identifier) (*
 		return nil, fmt.Errorf("failed to rename table: %w", err)
 	}
 
-	return c.LoadTable(ctx, to, nil)
+	return c.LoadTable(ctx, to)
 }
 
 func (c *Catalog) CheckTableExists(ctx context.Context, identifier table.Identifier) (bool, error) {
