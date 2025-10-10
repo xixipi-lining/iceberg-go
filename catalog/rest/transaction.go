@@ -2,7 +2,6 @@ package rest
 
 import (
 	"context"
-	"fmt"
 	"net/url"
 
 	"github.com/apache/iceberg-go"
@@ -10,32 +9,38 @@ import (
 	"github.com/apache/iceberg-go/table"
 )
 
-var _ catalog.TransactionCatalog = (*Catalog)(nil)
+type TransactionCatalog struct {
+	*Catalog
+}
+
+func NewTransactionCatalog(cat *Catalog) (catalog.TransactionCatalog, error) {
+	return &TransactionCatalog{cat}, nil
+}
 
 type kv struct {
-	Key string `json:"key"`
+	Key   string `json:"key"`
 	Value string `json:"value"`
 }
 
-func (r *Catalog) SetKVSidecar(ctx context.Context, key, value string) error {
+func (c *TransactionCatalog) SetKVSidecar(ctx context.Context, key, value string) error {
 	payload := kv{
-		Key: key,
+		Key:   key,
 		Value: value,
 	}
-	_, err := doPost[kv, struct{}](ctx, r.baseURI, []string{"kvsidecar"}, payload, r.cl, nil)
+	_, err := doPost[kv, struct{}](ctx, c.baseURI, []string{"kvsidecar"}, payload, c.cl, nil)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (r *Catalog) GetKVSidecar(ctx context.Context, key string) (string, error) {
-	uri := r.baseURI.JoinPath("kvsidecar")
+func (c *TransactionCatalog) GetKVSidecar(ctx context.Context, key string) (string, error) {
+	uri := c.baseURI.JoinPath("kvsidecar")
 	v := url.Values{}
 	v.Set("key", key)
 	uri.RawQuery = v.Encode()
 
-	rsp, err := doGet[kv](ctx, uri, []string{}, r.cl, nil)
+	rsp, err := doGet[kv](ctx, uri, []string{}, c.cl, nil)
 	if err != nil {
 		return "", err
 	}
@@ -53,24 +58,20 @@ type transactionRequest struct {
 		createTableRequest
 		Namespace string `json:"namespace"`
 	} `json:"create_table"`
-	UpdateTable *updateTableRequest `json:"update_table"`
-	SetKVSidecar *kv `json:"set_kv_sidecar"`
+	UpdateTable  *updateTableRequest `json:"update_table"`
+	SetKVSidecar *kv                 `json:"set_kv_sidecar"`
 }
 
-func (r *Catalog) Transaction(ctx context.Context, reqs []catalog.TransactionRequest, followers ...catalog.FollowerCatalog) error {
-	if len(followers) != 0 {
-		return fmt.Errorf("followers are not supported for REST catalog")
-	}
-
-	payload := make([]transactionRequest, len(reqs))
-	for i, req := range reqs {
-		switch req := req.(type) {
-		case *catalog.CreateTableRequest:
+func (c *TransactionCatalog) Transaction(ctx context.Context, operations []catalog.Operation) error {
+	payload := make([]transactionRequest, len(operations))
+	for i, op := range operations {
+		switch req := op.(type) {
+		case *catalog.OperationCreateTable:
 			ns, tbl, err := splitIdentForPath(req.Identifier)
 			if err != nil {
 				return err
 			}
-			
+
 			var cfg catalog.CreateTableCfg
 			for _, o := range req.Opts {
 				o(&cfg)
@@ -107,7 +108,7 @@ func (r *Catalog) Transaction(ctx context.Context, reqs []catalog.TransactionReq
 				Namespace: ns,
 			}
 
-		case *catalog.CommitTableRequest:
+		case *catalog.OperationCommitTable:
 			_, tbl, err := splitIdentForPath(req.Identifier)
 			if err != nil {
 				return err
@@ -116,20 +117,20 @@ func (r *Catalog) Transaction(ctx context.Context, reqs []catalog.TransactionReq
 			payload[i].UpdateTable = &updateTableRequest{
 				Identifier: identifier{
 					Namespace: catalog.NamespaceFromIdent(req.Identifier),
-					Name: tbl,
+					Name:      tbl,
 				},
 				Requirements: req.Requirements,
-				Updates: req.Updates,
+				Updates:      req.Updates,
 			}
-		case *catalog.SetKVSidecarRequest:
+		case *catalog.OperationSetKVSidecar:
 			payload[i].SetKVSidecar = &kv{
-				Key: req.Key,
+				Key:   req.Key,
 				Value: req.Value,
 			}
 		}
 	}
 
-	_, err := doPost[[]transactionRequest, struct{}](ctx, r.baseURI, []string{"transaction"}, payload, r.cl, nil)
+	_, err := doPost[[]transactionRequest, struct{}](ctx, c.baseURI, []string{"transaction"}, payload, c.cl, nil)
 	if err != nil {
 		return err
 	}

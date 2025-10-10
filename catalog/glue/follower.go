@@ -22,7 +22,7 @@ func (c *Catalog) CreateTableByTable(ctx context.Context, staged *table.StagedTa
 		DatabaseName: aws.String(database),
 		TableInput:   constructTableInput(tableName, staged.Table, nil),
 	})
-	
+
 	return err
 }
 
