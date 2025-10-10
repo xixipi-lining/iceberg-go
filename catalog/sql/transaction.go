@@ -146,6 +146,45 @@ func (c *TransactionCatalog) stageCommitTable(ctx context.Context, ident table.I
 }
 
 func (c *TransactionCatalog) Transaction(ctx context.Context, operations []catalog.Operation) error {
+	op, asyncF, err := c.transaction(ctx, operations)
+	if err != nil {
+		return err
+	}
+
+	err = withWriteTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) error {
+		err := op(ctx, tx)
+		if err != nil {
+			return err
+		}
+
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	go asyncF()
+
+	return nil
+}
+
+func (c *TransactionCatalog) TransactionTx(ctx context.Context, operations []catalog.Operation, tx bun.Tx) error {
+	op, asyncF, err := c.transaction(ctx, operations)
+	if err != nil {
+		return err
+	}
+
+	err = op(ctx, tx)
+	if err != nil {
+		return err
+	}
+
+	go asyncF()
+
+	return nil
+}
+
+func (c *TransactionCatalog) transaction(ctx context.Context, operations []catalog.Operation) (func(context.Context, bun.Tx) error, func(), error) {
 	ops := make([]func(context.Context, bun.Tx) error, len(operations))
 	insts := make([]func() error, len(c.followers))
 
@@ -157,15 +196,15 @@ func (c *TransactionCatalog) Transaction(ctx context.Context, operations []catal
 			ns := strings.Join(nsIdent, ".")
 			exists, err := c.namespaceExists(ctx, ns)
 			if err != nil {
-				return err
+				return nil, nil, err
 			}
 			if !exists {
-				return fmt.Errorf("%w: %s", catalog.ErrNoSuchNamespace, ns)
+				return nil, nil, fmt.Errorf("%w: %s", catalog.ErrNoSuchNamespace, ns)
 			}
 
 			staged, err := c.stageCreateTable(ctx, req.Identifier, req.Schema, req.Opts...)
 			if err != nil {
-				return err
+				return nil, nil, err
 			}
 
 			ops[i] = func(ctx context.Context, tx bun.Tx) error {
@@ -198,7 +237,7 @@ func (c *TransactionCatalog) Transaction(ctx context.Context, operations []catal
 				if errors.Is(err, ErrNoChanges) {
 					continue
 				}
-				return err
+				return nil, nil, err
 			}
 
 			ops[i] = func(ctx context.Context, tx bun.Tx) error {
@@ -269,7 +308,20 @@ func (c *TransactionCatalog) Transaction(ctx context.Context, operations []catal
 		}
 	}
 
-	go catalog.ExecuteFollowerInstructions(insts)
+	op := func(ctx context.Context, tx bun.Tx) error {
+		for _, op := range ops {
+			err := op(ctx, tx)
+			if err != nil {
+				return err
+			}
+		}
 
-	return nil
+		return nil
+	}
+
+	asyncF := func() {
+		catalog.ExecuteFollowerInstructions(insts)
+	}
+
+	return op, asyncF, nil
 }
