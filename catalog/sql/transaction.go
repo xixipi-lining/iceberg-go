@@ -26,11 +26,10 @@ type sqlIcebergKVSidecarItem struct {
 
 type TransactionCatalog struct {
 	*Catalog
-	followers []catalog.FollowerCatalog
 }
 
-func NewTransactionCatalog(cat *Catalog, followers ...catalog.FollowerCatalog) (catalog.TransactionCatalog, error) {
-	tcat := &TransactionCatalog{cat, followers}
+func NewTransactionCatalog(cat *Catalog) (catalog.TransactionCatalog, error) {
+	tcat := &TransactionCatalog{cat}
 	if cat.props.GetBool(initCatalogTablesKey, true) {
 		return tcat, tcat.ensureTablesExist()
 	}
@@ -146,7 +145,7 @@ func (c *TransactionCatalog) stageCommitTable(ctx context.Context, ident table.I
 }
 
 func (c *TransactionCatalog) Transaction(ctx context.Context, operations []catalog.Operation) error {
-	op, asyncF, err := c.transaction(ctx, operations)
+	op, err := c.TransactionTx(ctx, operations)
 	if err != nil {
 		return err
 	}
@@ -163,30 +162,11 @@ func (c *TransactionCatalog) Transaction(ctx context.Context, operations []catal
 		return err
 	}
 
-	go asyncF()
-
 	return nil
 }
 
-func (c *TransactionCatalog) TransactionTx(ctx context.Context, operations []catalog.Operation, tx bun.Tx) error {
-	op, asyncF, err := c.transaction(ctx, operations)
-	if err != nil {
-		return err
-	}
-
-	err = op(ctx, tx)
-	if err != nil {
-		return err
-	}
-
-	go asyncF()
-
-	return nil
-}
-
-func (c *TransactionCatalog) transaction(ctx context.Context, operations []catalog.Operation) (func(context.Context, bun.Tx) error, func(), error) {
+func (c *TransactionCatalog) TransactionTx(ctx context.Context, operations []catalog.Operation) (func(context.Context, bun.Tx) error, error) {
 	ops := make([]func(context.Context, bun.Tx) error, len(operations))
-	insts := make([]func() error, len(c.followers))
 
 	for i, op := range operations {
 		switch req := op.(type) {
@@ -196,15 +176,15 @@ func (c *TransactionCatalog) transaction(ctx context.Context, operations []catal
 			ns := strings.Join(nsIdent, ".")
 			exists, err := c.namespaceExists(ctx, ns)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 			if !exists {
-				return nil, nil, fmt.Errorf("%w: %s", catalog.ErrNoSuchNamespace, ns)
+				return nil, fmt.Errorf("%w: %s", catalog.ErrNoSuchNamespace, ns)
 			}
 
 			staged, err := c.stageCreateTable(ctx, req.Identifier, req.Schema, req.Opts...)
 			if err != nil {
-				return nil, nil, err
+				return nil, err
 			}
 
 			ops[i] = func(ctx context.Context, tx bun.Tx) error {
@@ -222,12 +202,6 @@ func (c *TransactionCatalog) transaction(ctx context.Context, operations []catal
 				return nil
 			}
 
-			for _, f := range c.followers {
-				insts[i] = func() error {
-					return f.CreateTableByTable(ctx, staged)
-				}
-			}
-
 		case *catalog.OperationCommitTable:
 			nsIdent := catalog.NamespaceFromIdent(req.Identifier)
 			tblIdent := catalog.TableNameFromIdent(req.Identifier)
@@ -237,7 +211,7 @@ func (c *TransactionCatalog) transaction(ctx context.Context, operations []catal
 				if errors.Is(err, ErrNoChanges) {
 					continue
 				}
-				return nil, nil, err
+				return nil, err
 			}
 
 			ops[i] = func(ctx context.Context, tx bun.Tx) error {
@@ -282,12 +256,6 @@ func (c *TransactionCatalog) transaction(ctx context.Context, operations []catal
 				return nil
 			}
 
-			for _, f := range c.followers {
-				insts[i] = func() error {
-					return f.CommitTableByTable(ctx, current, staged)
-				}
-			}
-
 		case *catalog.OperationSetKVSidecar:
 			ops[i] = func(ctx context.Context, tx bun.Tx) error {
 				item := &sqlIcebergKVSidecarItem{
@@ -319,9 +287,5 @@ func (c *TransactionCatalog) transaction(ctx context.Context, operations []catal
 		return nil
 	}
 
-	asyncF := func() {
-		catalog.ExecuteFollowerInstructions(insts)
-	}
-
-	return op, asyncF, nil
+	return op, nil
 }
