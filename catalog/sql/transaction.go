@@ -26,11 +26,12 @@ type sqlIcebergKVSidecarItem struct {
 
 type TransactionCatalog struct {
 	*Catalog
+	followers []catalog.FollowerCatalog
 }
 
-func NewTransactionCatalog(db *bun.DB, props iceberg.Properties) (catalog.TransactionCatalog, error) {
+func NewTransactionCatalog(db *bun.DB, props iceberg.Properties, followers ...catalog.FollowerCatalog) (catalog.TransactionCatalog, error) {
 	cat := &Catalog{db: db, name: "", props: props}
-	tcat := &TransactionCatalog{cat}
+	tcat := &TransactionCatalog{cat, followers}
 
 	if props.GetBool(initCatalogTablesKey, true) {
 		if err := cat.ensureTablesExist(); err != nil {
@@ -175,6 +176,7 @@ func (c *TransactionCatalog) Transaction(ctx context.Context, operations []catal
 
 func (c *TransactionCatalog) TransactionTx(ctx context.Context, operations []catalog.Operation) (func(context.Context, bun.Tx) error, error) {
 	ops := make([]func(context.Context, bun.Tx) error, len(operations))
+	followerOps := make([]func() error, 0, len(c.followers)*len(operations))
 
 	for i, op := range operations {
 		switch req := op.(type) {
@@ -208,6 +210,12 @@ func (c *TransactionCatalog) TransactionTx(ctx context.Context, operations []cat
 				}
 
 				return nil
+			}
+
+			for _, follower := range c.followers {
+				followerOps = append(followerOps, func() error {
+					return follower.FollowCreateTable(ctx, staged)
+				})
 			}
 
 		case *catalog.OperationCommitTable:
@@ -264,6 +272,16 @@ func (c *TransactionCatalog) TransactionTx(ctx context.Context, operations []cat
 				return nil
 			}
 
+			previousMetadataLocation := ""
+			if current != nil {
+				previousMetadataLocation = current.MetadataLocation()
+			}
+			for _, follower := range c.followers {
+				followerOps = append(followerOps, func() error {
+					return follower.FollowCommitTable(ctx, &previousMetadataLocation, staged)
+				})
+			}
+
 		case *catalog.OperationSetKVSidecar:
 			ops[i] = func(ctx context.Context, tx bun.Tx) error {
 				item := &sqlIcebergKVSidecarItem{
@@ -284,7 +302,7 @@ func (c *TransactionCatalog) TransactionTx(ctx context.Context, operations []cat
 		}
 	}
 
-	op := func(ctx context.Context, tx bun.Tx) error {
+	return func(ctx context.Context, tx bun.Tx) error {
 		for _, op := range ops {
 			err := op(ctx, tx)
 			if err != nil {
@@ -292,8 +310,13 @@ func (c *TransactionCatalog) TransactionTx(ctx context.Context, operations []cat
 			}
 		}
 
-		return nil
-	}
+		for _, followerOp := range followerOps {
+			err := followerOp()
+			if err != nil {
+				return err
+			}
+		}
 
-	return op, nil
+		return nil
+	}, nil
 }

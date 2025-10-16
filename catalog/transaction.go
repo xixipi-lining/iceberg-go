@@ -38,3 +38,8 @@ type TransactionCatalog interface {
 	GetKVSidecar(ctx context.Context, key string) (string, error)
 	Transaction(ctx context.Context, operations []Operation) error
 }
+
+type FollowerCatalog interface {
+	FollowCreateTable(ctx context.Context, staged *table.StagedTable) error
+	FollowCommitTable(ctx context.Context, previousMetadataLocation *string, staged *table.StagedTable) error
+}

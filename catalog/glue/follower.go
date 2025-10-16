@@ -1,0 +1,85 @@
+package glue
+
+import (
+	"context"
+	"errors"
+	"fmt"
+
+	"github.com/apache/iceberg-go/catalog"
+	"github.com/apache/iceberg-go/table"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/glue"
+)
+
+func (c *Catalog) FollowCreateTable(ctx context.Context, staged *table.StagedTable) error {
+	database, tableName, err := identifierToGlueTable(staged.Identifier())
+	if err != nil {
+		return err
+	}
+
+	_, err = c.glueSvc.CreateTable(ctx, &glue.CreateTableInput{
+		CatalogId:    c.catalogId,
+		DatabaseName: aws.String(database),
+		TableInput:   constructTableInput(tableName, staged.Table, nil),
+	})
+
+	return err
+}
+
+func (c *Catalog) FollowCommitTable(ctx context.Context, previousMetadataLocation *string, staged *table.StagedTable) error {
+	database, tableName, err := identifierToGlueTable(staged.Identifier())
+	if err != nil {
+		return err
+	}
+
+	currentGlueTable, err := c.getTable(ctx, database, tableName)
+	if err != nil && !errors.Is(err, catalog.ErrNoSuchTable) {
+		return err
+	}
+
+	var current *table.Table
+	if currentGlueTable != nil {
+		current, err = c.convertGlueToIceberg(ctx, currentGlueTable)
+		if err != nil {
+			return err
+		}
+	}
+
+	if current == nil {
+		if previousMetadataLocation != nil {
+			return fmt.Errorf("cannot commit table %s.%s: because previous metadata location is provided but table does not exist", database, tableName)
+		}
+
+		_, err = c.glueSvc.CreateTable(ctx, &glue.CreateTableInput{
+			CatalogId:    c.catalogId,
+			DatabaseName: aws.String(database),
+			TableInput:   constructTableInput(tableName, staged.Table, nil),
+		})
+
+		return err
+	}
+
+	if previousMetadataLocation == nil {
+		return fmt.Errorf("cannot commit table %s.%s: because previous metadata location is not provided", database, tableName)
+	}
+
+	if current.MetadataLocation() != *previousMetadataLocation {
+		return fmt.Errorf("cannot commit table %s.%s: because previous metadata location does not match the current metadata location", database, tableName)
+	}
+
+	if currentGlueTable.VersionId == nil {
+		return fmt.Errorf("cannot commit table %s.%s: because Glue table version id is missing", database, tableName)
+	}
+
+	_, err = c.glueSvc.UpdateTable(ctx, &glue.UpdateTableInput{
+		CatalogId:    c.catalogId,
+		DatabaseName: aws.String(database),
+		TableInput:   constructTableInput(tableName, staged.Table, currentGlueTable),
+		VersionId:    currentGlueTable.VersionId,
+		SkipArchive:  aws.Bool(c.props.GetBool(SkipArchive, SkipArchiveDefault)),
+	})
+
+	return err
+}
+
+var _ catalog.FollowerCatalog = (*Catalog)(nil)
