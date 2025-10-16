@@ -159,7 +159,7 @@ func (c *TransactionCatalog) Transaction(ctx context.Context, operations []catal
 		return err
 	}
 
-	err = withWriteTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) error {
+	return withWriteTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) error {
 		err := op(ctx, tx)
 		if err != nil {
 			return err
@@ -167,11 +167,6 @@ func (c *TransactionCatalog) Transaction(ctx context.Context, operations []catal
 
 		return nil
 	})
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func (c *TransactionCatalog) TransactionTx(ctx context.Context, operations []catalog.Operation) (func(context.Context, bun.Tx) error, error) {
