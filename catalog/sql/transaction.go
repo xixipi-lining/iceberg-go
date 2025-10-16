@@ -28,10 +28,18 @@ type TransactionCatalog struct {
 	*Catalog
 }
 
-func NewTransactionCatalog(cat *Catalog) (catalog.TransactionCatalog, error) {
+func NewTransactionCatalog(db *bun.DB, props iceberg.Properties) (catalog.TransactionCatalog, error) {
+	cat := &Catalog{db: db, name: "", props: props}
 	tcat := &TransactionCatalog{cat}
-	if cat.props.GetBool(initCatalogTablesKey, true) {
-		return tcat, tcat.ensureTablesExist()
+
+	if props.GetBool(initCatalogTablesKey, true) {
+		if err := cat.ensureTablesExist(); err != nil {
+			return nil, err
+		}
+
+		if err := tcat.ensureTablesExist(); err != nil {
+			return nil, err
+		}
 	}
 
 	return tcat, nil
