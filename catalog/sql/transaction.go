@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/apache/iceberg-go"
@@ -29,7 +30,7 @@ type TransactionCatalog struct {
 	followers []catalog.FollowerCatalog
 }
 
-func NewTransactionCatalog(db *bun.DB, props iceberg.Properties, followers ...catalog.FollowerCatalog) (catalog.TransactionCatalog, error) {
+func NewTransactionCatalog(db *bun.DB, props iceberg.Properties, followers ...catalog.FollowerCatalog) (*TransactionCatalog, error) {
 	cat := &Catalog{db: db, name: "", props: props}
 	tcat := &TransactionCatalog{cat, followers}
 
@@ -109,6 +110,59 @@ func (c *TransactionCatalog) GetKVSidecar(ctx context.Context, key string) (stri
 	return result.Value, nil
 }
 
+func (c *TransactionCatalog) CreateTable(ctx context.Context, ident table.Identifier, sc *iceberg.Schema, opts ...catalog.CreateTableOpt) (*table.Table, error) {
+	staged, err := c.stageCreateTable(ctx, ident, sc, opts...)
+	if err != nil {
+		return nil, err
+	}
+
+	nsIdent := catalog.NamespaceFromIdent(ident)
+	tblIdent := catalog.TableNameFromIdent(ident)
+	ns := strings.Join(nsIdent, ".")
+	dbOp := func(ctx context.Context, tx bun.Tx) error {
+		_, err := tx.NewInsert().Model(&sqlIcebergTable{
+			CatalogName:      c.name,
+			TableNamespace:   ns,
+			TableName:        tblIdent,
+			MetadataLocation: sql.NullString{String: staged.MetadataLocation(), Valid: true},
+			IcebergType:      TableType,
+		}).Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to create table: %w", err)
+		}
+
+		return nil
+	}
+
+	followerOps := make([]func() error, 0, len(c.followers))
+	for _, follower := range c.followers {
+		followerOps = append(followerOps, func() error {
+			return follower.FollowCreateTable(ctx, staged)
+		})
+	}
+
+	err = withWriteTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) error {
+		err := dbOp(ctx, tx)
+		if err != nil {
+			return err
+		}
+
+		for _, followerOp := range followerOps {
+			err := followerOp()
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return c.LoadTable(ctx, ident)
+}
+
 func (c *TransactionCatalog) stageCreateTable(ctx context.Context, ident table.Identifier, sc *iceberg.Schema, opts ...catalog.CreateTableOpt) (*table.StagedTable, error) {
 	staged, err := internal.CreateStagedTable(ctx, c.props, c.LoadNamespaceProperties, ident, sc, opts...)
 	if err != nil {
@@ -131,6 +185,91 @@ func (c *TransactionCatalog) stageCreateTable(ctx context.Context, ident table.I
 	return &staged, nil
 }
 
+func (c *TransactionCatalog) CommitTable(ctx context.Context, ident table.Identifier, reqs []table.Requirement, updates []table.Update) (table.Metadata, string, error) {
+	ns := catalog.NamespaceFromIdent(ident)
+	tblName := catalog.TableNameFromIdent(ident)
+
+	current, staged, err := c.stageCommitTable(ctx, ident, reqs, updates)
+	if err != nil {
+		return nil, "", err
+	}
+
+	dbOp := func(ctx context.Context, tx bun.Tx) error {
+		if current != nil {
+			res, err := tx.NewUpdate().Model(&sqlIcebergTable{
+				CatalogName:              c.name,
+				TableNamespace:           strings.Join(ns, "."),
+				TableName:                tblName,
+				IcebergType:              TableType,
+				MetadataLocation:         sql.NullString{Valid: true, String: staged.MetadataLocation()},
+				PreviousMetadataLocation: sql.NullString{Valid: true, String: current.MetadataLocation()},
+			}).WherePK().Where("metadata_location = ?", current.MetadataLocation()).
+				Where("iceberg_type = ?", TableType).
+				Exec(ctx)
+			if err != nil {
+				return fmt.Errorf("error updating table information: %w", err)
+			}
+
+			n, err := res.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("error updating table information: %w", err)
+			}
+
+			if n == 0 {
+				return fmt.Errorf("table has been updated by another process: %s.%s", strings.Join(ns, "."), tblName)
+			}
+
+			return nil
+		}
+
+		_, err := tx.NewInsert().Model(&sqlIcebergTable{
+			CatalogName:      c.name,
+			TableNamespace:   strings.Join(ns, "."),
+			TableName:        tblName,
+			IcebergType:      TableType,
+			MetadataLocation: sql.NullString{Valid: true, String: staged.MetadataLocation()},
+		}).Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to create table: %w", err)
+		}
+
+		return nil
+	}
+
+	previousMetadataLocation := ""
+	if current != nil {
+		previousMetadataLocation = current.MetadataLocation()
+	}
+
+	followerOps := make([]func() error, 0, len(c.followers))
+	for _, follower := range c.followers {
+		followerOps = append(followerOps, func() error {
+			return follower.FollowCommitTable(ctx, &previousMetadataLocation, staged)
+		})
+	}
+
+	err = withWriteTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) error {
+		err := dbOp(ctx, tx)
+		if err != nil {
+			return err
+		}
+
+		for _, followerOp := range followerOps {
+			err := followerOp()
+			if err != nil {
+				return err
+			}
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, "", err
+	}
+
+	return staged.Metadata(), staged.MetadataLocation(), nil
+}
+
 func (c *TransactionCatalog) stageCommitTable(ctx context.Context, ident table.Identifier, reqs []table.Requirement, updates []table.Update) (*table.Table, *table.StagedTable, error) {
 	current, err := c.LoadTable(ctx, ident)
 	if err != nil && !errors.Is(err, catalog.ErrNoSuchTable) {
@@ -146,7 +285,10 @@ func (c *TransactionCatalog) stageCommitTable(ctx context.Context, ident table.I
 		return current, staged, ErrNoChanges
 	}
 
-	if err := internal.WriteMetadata(ctx, staged.Metadata(), staged.MetadataLocation(), staged.Properties()); err != nil {
+	props := make(iceberg.Properties)
+	maps.Copy(props, staged.Properties())
+	maps.Copy(props, c.Catalog.props)
+	if err := internal.WriteMetadata(ctx, staged.Metadata(), staged.MetadataLocation(), props); err != nil {
 		return nil, nil, err
 	}
 
