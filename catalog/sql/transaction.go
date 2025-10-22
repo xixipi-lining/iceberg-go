@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"strings"
 
@@ -27,12 +28,12 @@ type sqlIcebergKVSidecarItem struct {
 
 type TransactionCatalog struct {
 	*Catalog
-	followers []catalog.FollowerCatalog
+	follower catalog.FollowerCatalog
 }
 
-func NewTransactionCatalog(db *bun.DB, props iceberg.Properties, followers ...catalog.FollowerCatalog) (*TransactionCatalog, error) {
+func NewTransactionCatalog(db *bun.DB, props iceberg.Properties, follower catalog.FollowerCatalog) (*TransactionCatalog, error) {
 	cat := &Catalog{db: db, name: "", props: props}
-	tcat := &TransactionCatalog{cat, followers}
+	tcat := &TransactionCatalog{cat, follower}
 
 	if props.GetBool(initCatalogTablesKey, true) {
 		if err := cat.ensureTablesExist(); err != nil {
@@ -134,27 +135,13 @@ func (c *TransactionCatalog) CreateTable(ctx context.Context, ident table.Identi
 		return nil
 	}
 
-	followerOps := make([]func() error, 0, len(c.followers))
-	for _, follower := range c.followers {
-		followerOps = append(followerOps, func() error {
-			return follower.FollowCreateTable(ctx, staged)
-		})
-	}
-
 	err = withWriteTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) error {
 		err := dbOp(ctx, tx)
 		if err != nil {
 			return err
 		}
 
-		for _, followerOp := range followerOps {
-			err := followerOp()
-			if err != nil {
-				return err
-			}
-		}
-
-		return nil
+		return c.follower.FollowCreateTable(ctx, staged)
 	})
 	if err != nil {
 		return nil, err
@@ -241,27 +228,13 @@ func (c *TransactionCatalog) CommitTable(ctx context.Context, ident table.Identi
 		previousMetadataLocation = current.MetadataLocation()
 	}
 
-	followerOps := make([]func() error, 0, len(c.followers))
-	for _, follower := range c.followers {
-		followerOps = append(followerOps, func() error {
-			return follower.FollowCommitTable(ctx, &previousMetadataLocation, staged)
-		})
-	}
-
 	err = withWriteTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) error {
 		err := dbOp(ctx, tx)
 		if err != nil {
 			return err
 		}
 
-		for _, followerOp := range followerOps {
-			err := followerOp()
-			if err != nil {
-				return err
-			}
-		}
-
-		return nil
+		return c.follower.FollowCommitTable(ctx, &previousMetadataLocation, staged)
 	})
 	if err != nil {
 		return nil, "", err
@@ -313,7 +286,7 @@ func (c *TransactionCatalog) Transaction(ctx context.Context, operations []catal
 
 func (c *TransactionCatalog) TransactionTx(ctx context.Context, operations []catalog.Operation) (func(context.Context, bun.Tx) error, error) {
 	ops := make([]func(context.Context, bun.Tx) error, len(operations))
-	followerOps := make([]func() error, 0, len(c.followers)*len(operations))
+	followerOps := make([]func() error, 0, len(operations))
 
 	for i, op := range operations {
 		switch req := op.(type) {
@@ -349,11 +322,9 @@ func (c *TransactionCatalog) TransactionTx(ctx context.Context, operations []cat
 				return nil
 			}
 
-			for _, follower := range c.followers {
-				followerOps = append(followerOps, func() error {
-					return follower.FollowCreateTable(ctx, staged)
-				})
-			}
+			followerOps = append(followerOps, func() error {
+				return c.follower.FollowCreateTable(ctx, staged)
+			})
 
 		case *catalog.OperationCommitTable:
 			nsIdent := catalog.NamespaceFromIdent(req.Identifier)
@@ -413,11 +384,9 @@ func (c *TransactionCatalog) TransactionTx(ctx context.Context, operations []cat
 			if current != nil {
 				previousMetadataLocation = current.MetadataLocation()
 			}
-			for _, follower := range c.followers {
-				followerOps = append(followerOps, func() error {
-					return follower.FollowCommitTable(ctx, &previousMetadataLocation, staged)
-				})
-			}
+			followerOps = append(followerOps, func() error {
+				return c.follower.FollowCommitTable(ctx, &previousMetadataLocation, staged)
+			})
 
 		case *catalog.OperationSetKVSidecar:
 			ops[i] = func(ctx context.Context, tx bun.Tx) error {
@@ -450,7 +419,7 @@ func (c *TransactionCatalog) TransactionTx(ctx context.Context, operations []cat
 		for _, followerOp := range followerOps {
 			err := followerOp()
 			if err != nil {
-				return err
+				log.Printf("❗️❗️❗️ Failed to do follower operation: %v", err)
 			}
 		}
 
