@@ -22,7 +22,7 @@ var ErrNoChanges = errors.New("no changes")
 type sqlIcebergKVSidecarItem struct {
 	bun.BaseModel `bun:"table:iceberg_kv_sidecar"`
 
-	Name  string `bun:",pk"`
+	Key   string `bun:",pk"`
 	Value string `bun:",notnull"`
 }
 
@@ -65,12 +65,12 @@ func (c *TransactionCatalog) ensureTablesExist() error {
 func (c *TransactionCatalog) SetKVSidecar(ctx context.Context, key, value string) error {
 	err := withWriteTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) error {
 		item := &sqlIcebergKVSidecarItem{
-			Name:  key,
+			Key:   key,
 			Value: value,
 		}
 		_, err := tx.NewInsert().
 			Model(item).
-			On("CONFLICT (name) DO UPDATE").
+			On("CONFLICT (key) DO UPDATE").
 			Set("value = EXCLUDED.value").
 			Exec(ctx)
 		if err != nil {
@@ -90,7 +90,7 @@ func (c *TransactionCatalog) SetKVSidecar(ctx context.Context, key, value string
 func (c *TransactionCatalog) GetKVSidecar(ctx context.Context, key string) (string, error) {
 	result, err := withReadTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) (*sqlIcebergKVSidecarItem, error) {
 		item := new(sqlIcebergKVSidecarItem)
-		err := tx.NewSelect().Model(&item).Where("name = ?", key).Scan(ctx)
+		err := tx.NewSelect().Model(item).Where("key = ?", key).Scan(ctx)
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
@@ -391,12 +391,12 @@ func (c *TransactionCatalog) TransactionTx(ctx context.Context, operations []cat
 		case *catalog.OperationSetKVSidecar:
 			ops[i] = func(ctx context.Context, tx bun.Tx) error {
 				item := &sqlIcebergKVSidecarItem{
-					Name:  req.Key,
+					Key:   req.Key,
 					Value: req.Value,
 				}
 				_, err := tx.NewInsert().
 					Model(item).
-					On("CONFLICT (name) DO UPDATE").
+					On("CONFLICT (key) DO UPDATE").
 					Set("value = EXCLUDED.value").
 					Exec(ctx)
 				if err != nil {

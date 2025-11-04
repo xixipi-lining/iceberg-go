@@ -27,7 +27,7 @@ func (c *TransactionCatalog) SetKVSidecar(ctx context.Context, key, value string
 		Key:   key,
 		Value: value,
 	}
-	_, err := doPost[kv, struct{}](ctx, c.baseURI, []string{"kvsidecar"}, payload, c.cl, nil)
+	_, err := doPost[kv, struct{}](ctx, c.baseURI, []string{"kv-sidecar"}, payload, c.cl, nil)
 	if err != nil {
 		return err
 	}
@@ -35,7 +35,7 @@ func (c *TransactionCatalog) SetKVSidecar(ctx context.Context, key, value string
 }
 
 func (c *TransactionCatalog) GetKVSidecar(ctx context.Context, key string) (string, error) {
-	uri := c.baseURI.JoinPath("kvsidecar")
+	uri := c.baseURI.JoinPath("kv-sidecar")
 	v := url.Values{}
 	v.Set("key", key)
 	uri.RawQuery = v.Encode()
