@@ -322,9 +322,11 @@ func (c *TransactionCatalog) TransactionTx(ctx context.Context, operations []cat
 				return nil
 			}
 
-			followerOps = append(followerOps, func() error {
-				return c.follower.FollowCreateTable(ctx, staged)
-			})
+			if c.follower != nil {
+				followerOps = append(followerOps, func() error {
+					return c.follower.FollowCreateTable(ctx, staged)
+				})
+			}
 
 		case *catalog.OperationCommitTable:
 			nsIdent := catalog.NamespaceFromIdent(req.Identifier)
@@ -380,13 +382,15 @@ func (c *TransactionCatalog) TransactionTx(ctx context.Context, operations []cat
 				return nil
 			}
 
-			previousMetadataLocation := ""
-			if current != nil {
-				previousMetadataLocation = current.MetadataLocation()
+			if c.follower != nil {
+				previousMetadataLocation := ""
+				if current != nil {
+					previousMetadataLocation = current.MetadataLocation()
+				}
+				followerOps = append(followerOps, func() error {
+					return c.follower.FollowCommitTable(ctx, &previousMetadataLocation, staged)
+				})
 			}
-			followerOps = append(followerOps, func() error {
-				return c.follower.FollowCommitTable(ctx, &previousMetadataLocation, staged)
-			})
 
 		case *catalog.OperationSetKVSidecar:
 			ops[i] = func(ctx context.Context, tx bun.Tx) error {
