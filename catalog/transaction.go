@@ -7,36 +7,17 @@ import (
 	"github.com/apache/iceberg-go/table"
 )
 
-type OperationCreateTable struct {
-	Identifier table.Identifier
-	Schema     *iceberg.Schema
-	Opts       []CreateTableOpt
-}
-
-type OperationCommitTable struct {
-	Identifier   table.Identifier
-	Requirements []table.Requirement
-	Updates      []table.Update
-}
-
-type OperationSetKVSidecar struct {
-	Key   string
-	Value string
-}
-
-type Operation interface {
-	transactionOperation()
-}
-
-func (c *OperationCreateTable) transactionOperation()  {}
-func (c *OperationCommitTable) transactionOperation()  {}
-func (c *OperationSetKVSidecar) transactionOperation() {}
-
 type TransactionCatalog interface {
 	Catalog
-	SetKVSidecar(ctx context.Context, key, value string) error
-	GetKVSidecar(ctx context.Context, key string) (string, error)
-	Transaction(ctx context.Context, operations []Operation) error
+
+	SetQueueOffset(ctx context.Context, queueId, offset string) error
+	GetQueueOffset(ctx context.Context, queueId string) (string, error)
+
+	CreateTableInTx(ctx context.Context, identifier table.Identifier, schema *iceberg.Schema, opts ...CreateTableOpt) (*table.Table, error)
+	CommitTableInTx(ctx context.Context, identifier table.Identifier, requirements []table.Requirement, updates []table.Update) (table.Metadata, string, error)
+	SetQueueOffsetInTx(ctx context.Context, queueId, offset string) error
+
+	Commit(ctx context.Context) error
 }
 
 type FollowerCatalog interface {

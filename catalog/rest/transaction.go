@@ -2,7 +2,11 @@ package rest
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"maps"
 	"net/url"
+	"sync"
 
 	"github.com/apache/iceberg-go"
 	"github.com/apache/iceberg-go/catalog"
@@ -10,41 +14,97 @@ import (
 )
 
 type TransactionCatalog struct {
+	mx        sync.Mutex
+	requests  []transactionRequest
+	idx       int
+	committed chan struct{}
+	err       error
+	resp      []any
+
 	*Catalog
 }
 
 func NewTransactionCatalog(cat *Catalog) (catalog.TransactionCatalog, error) {
-	return &TransactionCatalog{cat}, nil
+	return &TransactionCatalog{Catalog: cat}, nil
 }
 
-type kv struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
+type queueOffset struct {
+	QueueId string `json:"queue_id"`
+	Offset  string `json:"offset"`
 }
 
-func (c *TransactionCatalog) SetKVSidecar(ctx context.Context, key, value string) error {
-	payload := kv{
-		Key:   key,
-		Value: value,
+func (c *TransactionCatalog) SetQueueOffset(ctx context.Context, queueId, offset string) error {
+	payload := queueOffset{
+		QueueId: queueId,
+		Offset:  offset,
 	}
-	_, err := doPost[kv, struct{}](ctx, c.baseURI, []string{"kv-sidecar"}, payload, c.cl, nil)
+	_, err := doPost[queueOffset, struct{}](ctx, c.baseURI, []string{"queue-offset"}, payload, c.cl, nil)
 	if err != nil {
 		return err
 	}
 	return nil
 }
 
-func (c *TransactionCatalog) GetKVSidecar(ctx context.Context, key string) (string, error) {
-	uri := c.baseURI.JoinPath("kv-sidecar")
+func (c *TransactionCatalog) GetQueueOffset(ctx context.Context, queueId string) (string, error) {
+	uri := c.baseURI.JoinPath("queue-offset")
 	v := url.Values{}
-	v.Set("key", key)
+	v.Set("queue_id", queueId)
 	uri.RawQuery = v.Encode()
 
-	rsp, err := doGet[kv](ctx, uri, []string{}, c.cl, nil)
+	rsp, err := doGet[queueOffset](ctx, uri, []string{}, c.cl, nil)
 	if err != nil {
 		return "", err
 	}
-	return rsp.Value, nil
+	return rsp.Offset, nil
+}
+
+func (c *TransactionCatalog) Commit(ctx context.Context) error {
+	c.mx.Lock()
+	defer c.mx.Unlock()
+
+	if len(c.requests) == 0 {
+		return errors.New("no requests to commit")
+	}
+
+	ret, err := doPost[[]transactionRequest, []any](ctx, c.baseURI, []string{"transaction"}, c.requests, c.cl, nil)
+	if err != nil {
+		return err
+	}
+
+	c.resp = ret
+	c.err = err
+	close(c.committed)
+	return err
+}
+
+func (c *TransactionCatalog) SetQueueOffsetInTx(ctx context.Context, queueId, offset string) error {
+	payload := queueOffset{
+		QueueId: queueId,
+		Offset:  offset,
+	}
+	c.mx.Lock()
+	if c.requests == nil {
+		c.requests = make([]transactionRequest, 0)
+		c.committed = make(chan struct{})
+		c.idx = 0
+	}
+	c.requests = append(c.requests, transactionRequest{
+		SetQueueOffset: &payload,
+	})
+	c.idx++
+	c.mx.Unlock()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-c.committed:
+	}
+
+	if c.err != nil {
+		return fmt.Errorf("transaction commit error %w", c.err)
+	}
+
+	return nil
 }
 
 type updateTableRequest struct {
@@ -58,81 +118,118 @@ type transactionRequest struct {
 		createTableRequest
 		Namespace string `json:"namespace"`
 	} `json:"create_table"`
-	UpdateTable  *updateTableRequest `json:"update_table"`
-	SetKVSidecar *kv                 `json:"set_kv_sidecar"`
+	UpdateTable    *updateTableRequest `json:"update_table"`
+	SetQueueOffset *queueOffset        `json:"set_queue_offset"`
 }
 
-func (c *TransactionCatalog) Transaction(ctx context.Context, operations []catalog.Operation) error {
-	payload := make([]transactionRequest, len(operations))
-	for i, op := range operations {
-		switch req := op.(type) {
-		case *catalog.OperationCreateTable:
-			ns, tbl, err := splitIdentForPath(req.Identifier)
-			if err != nil {
-				return err
-			}
-
-			var cfg catalog.CreateTableCfg
-			for _, o := range req.Opts {
-				o(&cfg)
-			}
-
-			freshSchema, err := iceberg.AssignFreshSchemaIDs(req.Schema, nil)
-			if err != nil {
-				return err
-			}
-
-			freshPartitionSpec, err := iceberg.AssignFreshPartitionSpecIDs(cfg.PartitionSpec, req.Schema, freshSchema)
-			if err != nil {
-				return err
-			}
-
-			freshSortOrder, err := table.AssignFreshSortOrderIDs(cfg.SortOrder, req.Schema, freshSchema)
-			if err != nil {
-				return err
-			}
-
-			payload[i].CreateTable = &struct {
-				createTableRequest
-				Namespace string `json:"namespace"`
-			}{
-				createTableRequest: createTableRequest{
-					Name:          tbl,
-					Schema:        freshSchema,
-					Location:      cfg.Location,
-					PartitionSpec: &freshPartitionSpec,
-					WriteOrder:    &freshSortOrder,
-					StageCreate:   false,
-					Props:         cfg.Properties,
-				},
-				Namespace: ns,
-			}
-
-		case *catalog.OperationCommitTable:
-			_, tbl, err := splitIdentForPath(req.Identifier)
-			if err != nil {
-				return err
-			}
-
-			payload[i].UpdateTable = &updateTableRequest{
-				Identifier: identifier{
-					Namespace: catalog.NamespaceFromIdent(req.Identifier),
-					Name:      tbl,
-				},
-				Requirements: req.Requirements,
-				Updates:      req.Updates,
-			}
-		case *catalog.OperationSetKVSidecar:
-			payload[i].SetKVSidecar = &kv{
-				Key:   req.Key,
-				Value: req.Value,
-			}
-		}
-	}
-
-	_, err := doPost[[]transactionRequest, struct{}](ctx, c.baseURI, []string{"transaction"}, payload, c.cl, nil)
+func (c *TransactionCatalog) CreateTableInTx(ctx context.Context, ident table.Identifier, schema *iceberg.Schema, opts ...catalog.CreateTableOpt) (*table.Table, error) {
+	ns, tbl, err := splitIdentForPath(ident)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return nil
+
+	var cfg catalog.CreateTableCfg
+	for _, o := range opts {
+		o(&cfg)
+	}
+
+	freshSchema, err := iceberg.AssignFreshSchemaIDs(schema, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	freshPartitionSpec, err := iceberg.AssignFreshPartitionSpecIDs(cfg.PartitionSpec, schema, freshSchema)
+	if err != nil {
+		return nil, err
+	}
+
+	freshSortOrder, err := table.AssignFreshSortOrderIDs(cfg.SortOrder, schema, freshSchema)
+	if err != nil {
+		return nil, err
+	}
+
+	payload := createTableRequest{
+		Name:          tbl,
+		Schema:        freshSchema,
+		Location:      cfg.Location,
+		PartitionSpec: &freshPartitionSpec,
+		WriteOrder:    &freshSortOrder,
+		StageCreate:   false,
+		Props:         cfg.Properties,
+	}
+
+	c.mx.Lock()
+	if c.requests == nil {
+		c.requests = make([]transactionRequest, 0)
+		c.committed = make(chan struct{})
+		c.idx = 0
+	}
+	idx := c.idx
+	c.requests = append(c.requests, transactionRequest{
+		CreateTable: &struct {
+			createTableRequest
+			Namespace string `json:"namespace"`
+		}{
+			createTableRequest: payload,
+			Namespace:          ns,
+		},
+	})
+	c.idx++
+	c.mx.Unlock()
+
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.committed:
+	}
+
+	if c.err != nil {
+		return nil, fmt.Errorf("transaction commit error %w", c.err)
+	}
+
+	ret := c.resp[idx].(*loadTableResponse)
+	config := maps.Clone(c.Catalog.props)
+	maps.Copy(config, ret.Metadata.Properties())
+	maps.Copy(config, ret.Config)
+
+	return c.tableFromResponse(ctx, ident, ret.Metadata, ret.MetadataLoc, config)
+}
+
+func (c *TransactionCatalog) CommitTableInTx(ctx context.Context, ident table.Identifier, requirements []table.Requirement, updates []table.Update) (table.Metadata, string, error) {
+	c.mx.Lock()
+	if c.requests == nil {
+		c.requests = make([]transactionRequest, 0)
+		c.committed = make(chan struct{})
+		c.idx = 0
+	}
+	idx := c.idx
+	c.requests = append(c.requests, transactionRequest{
+		UpdateTable: &updateTableRequest{
+			Identifier: identifier{
+				Namespace: catalog.NamespaceFromIdent(ident),
+				Name:      catalog.TableNameFromIdent(ident),
+			},
+			Requirements: requirements,
+			Updates:      updates,
+		},
+	})
+	c.idx++
+	c.mx.Unlock()
+
+	select {
+	case <-ctx.Done():
+		return nil, "", ctx.Err()
+	case <-c.committed:
+	}
+
+	if c.err != nil {
+		return nil, "", fmt.Errorf("transaction commit error %w", c.err)
+	}
+
+	ret := c.resp[idx].(*commitTableResponse)
+
+	config := maps.Clone(c.Catalog.props)
+	maps.Copy(config, ret.Metadata.Properties())
+
+	return ret.Metadata, ret.MetadataLoc, nil
 }
