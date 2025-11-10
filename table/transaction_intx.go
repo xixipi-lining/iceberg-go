@@ -5,7 +5,11 @@ import (
 	"errors"
 )
 
-func (t *Transaction) CommitInTx(ctx context.Context) (*Table, error) {
+type MultiTableTransaction interface {
+	CommitTableInTx(ctx context.Context, identifier Identifier, reqs []Requirement, updates []Update) (Metadata, string, error)
+}
+
+func (t *Transaction) CommitInTx(ctx context.Context, tx MultiTableTransaction) (*Table, error) {
 	t.mx.Lock()
 	defer t.mx.Unlock()
 
@@ -17,7 +21,7 @@ func (t *Transaction) CommitInTx(ctx context.Context) (*Table, error) {
 
 	if len(t.meta.updates) > 0 {
 		t.reqs = append(t.reqs, AssertTableUUID(t.meta.uuid))
-		tbl, err := t.tbl.doCommitInTx(ctx, t.meta.updates, t.reqs)
+		tbl, err := t.tbl.doCommitInTx(ctx, tx, t.meta.updates, t.reqs)
 		if err != nil {
 			return tbl, err
 		}

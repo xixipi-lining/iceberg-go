@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"maps"
 	"strings"
 	"sync"
@@ -35,14 +36,18 @@ func (o *sqlIcebergQueueOffset) BeforeUpdate(ctx context.Context, query *bun.Upd
 }
 
 type TransactionCatalog struct {
+	*Catalog
+	follower catalog.FollowerCatalog
+}
+
+type MultiTableTransaction struct {
+	*TransactionCatalog
+
 	mx          sync.Mutex
 	operations  []func(context.Context, bun.Tx) error
 	followerOps []func() error
 	committed   chan struct{}
 	err         error
-
-	*Catalog
-	follower catalog.FollowerCatalog
 }
 
 func NewTransactionCatalog(db *bun.DB, props iceberg.Properties, follower catalog.FollowerCatalog) (*TransactionCatalog, error) {
@@ -117,31 +122,54 @@ func (c *TransactionCatalog) GetQueueOffset(ctx context.Context, queueId string)
 	})
 }
 
-func (c *TransactionCatalog) Commit(ctx context.Context) error {
-	c.mx.Lock()
-	defer c.mx.Unlock()
-
-	if len(c.operations) == 0 {
-		return errors.New("no operations to commit")
+func (c *TransactionCatalog) NewMultiTableTransaction() catalog.MultiTableTransaction {
+	return &MultiTableTransaction{
+		TransactionCatalog: c,
+		operations:         make([]func(context.Context, bun.Tx) error, 0),
+		followerOps:        make([]func() error, 0),
+		committed:          make(chan struct{}),
 	}
+}
 
-	err := withWriteTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) error {
+func (c *MultiTableTransaction) Commit(ctx context.Context) error {
+	return withWriteTx(ctx, c.db, c.commit())
+}
+
+func (c *MultiTableTransaction) commit() func(context.Context, bun.Tx) error {
+	return func(ctx context.Context, tx bun.Tx) error {
+		c.mx.Lock()
+		defer c.mx.Unlock()
+
+		if len(c.operations) == 0 {
+			return errors.New("no operations to commit")
+		}
+
+		defer close(c.committed)
+
 		for _, op := range c.operations {
 			err := op(ctx, tx)
 			if err != nil {
+				c.err = err
 				return err
 			}
 		}
 
-		return nil
-	})
+		for _, op := range c.followerOps {
+			err := op()
+			if err != nil {
+				log.Printf("failed to follow create table: %v", err)
+			}
+		}
 
-	c.err = err
-	close(c.committed)
-	return err
+		return nil
+	}
 }
 
-func (c *TransactionCatalog) SetQueueOffsetInTx(ctx context.Context, queueId, offset string) error {
+func (c *MultiTableTransaction) CommitTx() func(context.Context, bun.Tx) error {
+	return c.commit()
+}
+
+func (c *MultiTableTransaction) SetQueueOffsetInTx(ctx context.Context, queueId, offset string) error {
 	c.mx.Lock()
 	if c.operations == nil {
 		c.operations = make([]func(context.Context, bun.Tx) error, 0)
@@ -163,7 +191,7 @@ func (c *TransactionCatalog) SetQueueOffsetInTx(ctx context.Context, queueId, of
 	return nil
 }
 
-func (c *TransactionCatalog) CreateTableInTx(ctx context.Context, ident table.Identifier, sc *iceberg.Schema, opts ...catalog.CreateTableOpt) (*table.Table, error) {
+func (c *MultiTableTransaction) CreateTableInTx(ctx context.Context, ident table.Identifier, sc *iceberg.Schema, opts ...catalog.CreateTableOpt) (*table.Table, error) {
 	staged, err := c.stageCreateTable(ctx, ident, sc, opts...)
 	if err != nil {
 		return nil, err
@@ -211,7 +239,7 @@ func (c *TransactionCatalog) CreateTableInTx(ctx context.Context, ident table.Id
 	return c.LoadTable(ctx, ident)
 }
 
-func (c *TransactionCatalog) stageCreateTable(ctx context.Context, ident table.Identifier, sc *iceberg.Schema, opts ...catalog.CreateTableOpt) (*table.StagedTable, error) {
+func (c *MultiTableTransaction) stageCreateTable(ctx context.Context, ident table.Identifier, sc *iceberg.Schema, opts ...catalog.CreateTableOpt) (*table.StagedTable, error) {
 	staged, err := internal.CreateStagedTable(ctx, c.props, c.LoadNamespaceProperties, ident, sc, opts...)
 	if err != nil {
 		return nil, err
@@ -233,7 +261,7 @@ func (c *TransactionCatalog) stageCreateTable(ctx context.Context, ident table.I
 	return &staged, nil
 }
 
-func (c *TransactionCatalog) CommitTableInTx(ctx context.Context, ident table.Identifier, reqs []table.Requirement, updates []table.Update) (table.Metadata, string, error) {
+func (c *MultiTableTransaction) CommitTableInTx(ctx context.Context, ident table.Identifier, reqs []table.Requirement, updates []table.Update) (table.Metadata, string, error) {
 	ns := catalog.NamespaceFromIdent(ident)
 	tblName := catalog.TableNameFromIdent(ident)
 
@@ -313,7 +341,7 @@ func (c *TransactionCatalog) CommitTableInTx(ctx context.Context, ident table.Id
 	return staged.Metadata(), staged.MetadataLocation(), nil
 }
 
-func (c *TransactionCatalog) stageCommitTable(ctx context.Context, ident table.Identifier, reqs []table.Requirement, updates []table.Update) (*table.Table, *table.StagedTable, error) {
+func (c *MultiTableTransaction) stageCommitTable(ctx context.Context, ident table.Identifier, reqs []table.Requirement, updates []table.Update) (*table.Table, *table.StagedTable, error) {
 	current, err := c.LoadTable(ctx, ident)
 	if err != nil && !errors.Is(err, catalog.ErrNoSuchTable) {
 		return nil, nil, err

@@ -13,6 +13,10 @@ type TransactionCatalog interface {
 	SetQueueOffset(ctx context.Context, queueId, offset string) error
 	GetQueueOffset(ctx context.Context, queueId string) (string, error)
 
+	NewMultiTableTransaction() MultiTableTransaction
+}
+
+type MultiTableTransaction interface {
 	CreateTableInTx(ctx context.Context, identifier table.Identifier, schema *iceberg.Schema, opts ...CreateTableOpt) (*table.Table, error)
 	CommitTableInTx(ctx context.Context, identifier table.Identifier, requirements []table.Requirement, updates []table.Update) (table.Metadata, string, error)
 	SetQueueOffsetInTx(ctx context.Context, queueId, offset string) error

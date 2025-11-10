@@ -14,14 +14,18 @@ import (
 )
 
 type TransactionCatalog struct {
+	*Catalog
+}
+
+type MultiTableTransaction struct {
+	*TransactionCatalog
+
 	mx        sync.Mutex
 	requests  []transactionRequest
 	idx       int
 	committed chan struct{}
 	err       error
 	resp      []any
-
-	*Catalog
 }
 
 func NewTransactionCatalog(cat *Catalog) (catalog.TransactionCatalog, error) {
@@ -58,7 +62,16 @@ func (c *TransactionCatalog) GetQueueOffset(ctx context.Context, queueId string)
 	return rsp.Offset, nil
 }
 
-func (c *TransactionCatalog) Commit(ctx context.Context) error {
+func (c *TransactionCatalog) NewMultiTableTransaction() catalog.MultiTableTransaction {
+	return &MultiTableTransaction{
+		TransactionCatalog: c,
+		requests:           make([]transactionRequest, 0),
+		idx:                0,
+		committed:          make(chan struct{}),
+	}
+}
+
+func (c *MultiTableTransaction) Commit(ctx context.Context) error {
 	c.mx.Lock()
 	defer c.mx.Unlock()
 
@@ -77,7 +90,7 @@ func (c *TransactionCatalog) Commit(ctx context.Context) error {
 	return err
 }
 
-func (c *TransactionCatalog) SetQueueOffsetInTx(ctx context.Context, queueId, offset string) error {
+func (c *MultiTableTransaction) SetQueueOffsetInTx(ctx context.Context, queueId, offset string) error {
 	payload := queueOffset{
 		QueueId: queueId,
 		Offset:  offset,
@@ -122,7 +135,7 @@ type transactionRequest struct {
 	SetQueueOffset *queueOffset        `json:"set_queue_offset"`
 }
 
-func (c *TransactionCatalog) CreateTableInTx(ctx context.Context, ident table.Identifier, schema *iceberg.Schema, opts ...catalog.CreateTableOpt) (*table.Table, error) {
+func (c *MultiTableTransaction) CreateTableInTx(ctx context.Context, ident table.Identifier, schema *iceberg.Schema, opts ...catalog.CreateTableOpt) (*table.Table, error) {
 	ns, tbl, err := splitIdentForPath(ident)
 	if err != nil {
 		return nil, err
@@ -195,7 +208,7 @@ func (c *TransactionCatalog) CreateTableInTx(ctx context.Context, ident table.Id
 	return c.tableFromResponse(ctx, ident, ret.Metadata, ret.MetadataLoc, config)
 }
 
-func (c *TransactionCatalog) CommitTableInTx(ctx context.Context, ident table.Identifier, requirements []table.Requirement, updates []table.Update) (table.Metadata, string, error) {
+func (c *MultiTableTransaction) CommitTableInTx(ctx context.Context, ident table.Identifier, requirements []table.Requirement, updates []table.Update) (table.Metadata, string, error) {
 	c.mx.Lock()
 	if c.requests == nil {
 		c.requests = make([]transactionRequest, 0)

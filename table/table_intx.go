@@ -2,13 +2,8 @@ package table
 
 import "context"
 
-type MultiTableTransactionCatalog interface {
-	CommitTableInTx(ctx context.Context, identifier Identifier, reqs []Requirement, updates []Update) (Metadata, string, error)
-}
-
-func (t Table) doCommitInTx(ctx context.Context, updates []Update, reqs []Requirement) (*Table, error) {
-	cat := t.cat.(MultiTableTransactionCatalog)
-	newMeta, newLoc, err := cat.CommitTableInTx(ctx, t.identifier, reqs, updates)
+func (t Table) doCommitInTx(ctx context.Context, tx MultiTableTransaction, updates []Update, reqs []Requirement) (*Table, error) {
+	newMeta, newLoc, err := tx.CommitTableInTx(ctx, t.identifier, reqs, updates)
 	if err != nil {
 		return nil, err
 	}
