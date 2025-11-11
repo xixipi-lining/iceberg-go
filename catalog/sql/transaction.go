@@ -25,7 +25,7 @@ type sqlIcebergQueueOffset struct {
 	bun.BaseModel `bun:"table:iceberg_queue_offset"`
 
 	QueueId   string    `bun:",pk"`
-	Offset    string    `bun:",notnull"`
+	Position  string    `bun:",notnull"`
 	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp"`
 	UpdatedAt time.Time `bun:"updated_at,notnull,default:current_timestamp"`
 }
@@ -92,13 +92,13 @@ func (c *TransactionCatalog) SetQueueOffset(ctx context.Context, queueId, offset
 func (c *TransactionCatalog) setQueueOffset(queueId, offset string) func(context.Context, bun.Tx) error {
 	return func(ctx context.Context, tx bun.Tx) error {
 		item := &sqlIcebergQueueOffset{
-			QueueId: queueId,
-			Offset:  offset,
+			QueueId:  queueId,
+			Position: offset,
 		}
 		_, err := tx.NewInsert().
 			Model(item).
 			On("CONFLICT (queue_id) DO UPDATE").
-			Set("offset = EXCLUDED.offset").
+			Set("position = EXCLUDED.position").
 			Exec(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to set queue offset: %w", err)
@@ -111,7 +111,7 @@ func (c *TransactionCatalog) setQueueOffset(queueId, offset string) func(context
 func (c *TransactionCatalog) GetQueueOffset(ctx context.Context, queueId string) (string, error) {
 	return withReadTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) (string, error) {
 		var offset string
-		err := tx.NewSelect().Column("offset").Model((*sqlIcebergQueueOffset)(nil)).Where("queue_id = ?", queueId).Scan(ctx, &offset)
+		err := tx.NewSelect().Column("position").Model((*sqlIcebergQueueOffset)(nil)).Where("queue_id = ?", queueId).Scan(ctx, &offset)
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", nil
 		}
@@ -142,7 +142,9 @@ func (c *MultiTableTransaction) Commit(ctx context.Context) error {
 
 func (c *MultiTableTransaction) commit() func(context.Context, bun.Tx) error {
 	return func(ctx context.Context, tx bun.Tx) error {
+		fmt.Println("waiting for operations to complete")
 		c.wg.Wait()
+		fmt.Println("operations completed")
 
 		c.mx.Lock()
 		defer c.mx.Unlock()
