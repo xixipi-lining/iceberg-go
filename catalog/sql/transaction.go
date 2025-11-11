@@ -44,13 +44,14 @@ type MultiTableTransaction struct {
 	*TransactionCatalog
 
 	mx          sync.Mutex
+	wg          sync.WaitGroup
 	operations  []func(context.Context, bun.Tx) error
 	followerOps []func() error
 	committed   chan struct{}
 	err         error
 }
 
-func NewTransactionCatalog(db *bun.DB, props iceberg.Properties, follower catalog.FollowerCatalog) (*TransactionCatalog, error) {
+func NewTransactionCatalog(db *bun.DB, props iceberg.Properties, follower catalog.FollowerCatalog) (catalog.TransactionCatalog, error) {
 	cat := &Catalog{db: db, name: "", props: props}
 	tcat := &TransactionCatalog{
 		Catalog:  cat,
@@ -122,13 +123,17 @@ func (c *TransactionCatalog) GetQueueOffset(ctx context.Context, queueId string)
 	})
 }
 
-func (c *TransactionCatalog) NewMultiTableTransaction() catalog.MultiTableTransaction {
-	return &MultiTableTransaction{
+func (c *TransactionCatalog) NewMultiTableTransaction(count int) catalog.MultiTableTransaction {
+	tx := &MultiTableTransaction{
 		TransactionCatalog: c,
-		operations:         make([]func(context.Context, bun.Tx) error, 0),
-		followerOps:        make([]func() error, 0),
-		committed:          make(chan struct{}),
+
+		operations:  make([]func(context.Context, bun.Tx) error, 0),
+		followerOps: make([]func() error, 0),
+		committed:   make(chan struct{}),
 	}
+
+	tx.wg.Add(count)
+	return tx
 }
 
 func (c *MultiTableTransaction) Commit(ctx context.Context) error {
@@ -137,6 +142,8 @@ func (c *MultiTableTransaction) Commit(ctx context.Context) error {
 
 func (c *MultiTableTransaction) commit() func(context.Context, bun.Tx) error {
 	return func(ctx context.Context, tx bun.Tx) error {
+		c.wg.Wait()
+
 		c.mx.Lock()
 		defer c.mx.Unlock()
 
@@ -178,6 +185,7 @@ func (c *MultiTableTransaction) SetQueueOffsetInTx(ctx context.Context, queueId,
 	}
 	c.operations = append(c.operations, c.setQueueOffset(queueId, offset))
 	c.mx.Unlock()
+	c.wg.Done()
 
 	select {
 	case <-ctx.Done():
@@ -222,10 +230,13 @@ func (c *MultiTableTransaction) CreateTableInTx(ctx context.Context, ident table
 		c.committed = make(chan struct{})
 	}
 	c.operations = append(c.operations, dbOp)
-	c.followerOps = append(c.followerOps, func() error {
-		return c.follower.FollowCreateTable(ctx, staged)
-	})
+	if c.follower != nil {
+		c.followerOps = append(c.followerOps, func() error {
+			return c.follower.FollowCreateTable(ctx, staged)
+		})
+	}
 	c.mx.Unlock()
+	c.wg.Done()
 
 	select {
 	case <-ctx.Done():
@@ -319,15 +330,18 @@ func (c *MultiTableTransaction) CommitTableInTx(ctx context.Context, ident table
 		c.committed = make(chan struct{})
 	}
 	c.operations = append(c.operations, dbOp)
-	c.followerOps = append(c.followerOps, func() error {
-		previousMetadataLocation := ""
-		if current != nil {
-			previousMetadataLocation = current.MetadataLocation()
-		}
+	if c.follower != nil {
+		c.followerOps = append(c.followerOps, func() error {
+			previousMetadataLocation := ""
+			if current != nil {
+				previousMetadataLocation = current.MetadataLocation()
+			}
 
-		return c.follower.FollowCommitTable(ctx, &previousMetadataLocation, staged)
-	})
+			return c.follower.FollowCommitTable(ctx, &previousMetadataLocation, staged)
+		})
+	}
 	c.mx.Unlock()
+	c.wg.Done()
 
 	select {
 	case <-ctx.Done():

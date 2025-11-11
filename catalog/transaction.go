@@ -13,7 +13,7 @@ type TransactionCatalog interface {
 	SetQueueOffset(ctx context.Context, queueId, offset string) error
 	GetQueueOffset(ctx context.Context, queueId string) (string, error)
 
-	NewMultiTableTransaction() MultiTableTransaction
+	NewMultiTableTransaction(int) MultiTableTransaction
 }
 
 type MultiTableTransaction interface {

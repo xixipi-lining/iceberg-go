@@ -21,6 +21,7 @@ type MultiTableTransaction struct {
 	*TransactionCatalog
 
 	mx        sync.Mutex
+	wg        sync.WaitGroup
 	requests  []transactionRequest
 	idx       int
 	committed chan struct{}
@@ -62,16 +63,20 @@ func (c *TransactionCatalog) GetQueueOffset(ctx context.Context, queueId string)
 	return rsp.Offset, nil
 }
 
-func (c *TransactionCatalog) NewMultiTableTransaction() catalog.MultiTableTransaction {
-	return &MultiTableTransaction{
+func (c *TransactionCatalog) NewMultiTableTransaction(count int) catalog.MultiTableTransaction {
+	tx := &MultiTableTransaction{
 		TransactionCatalog: c,
 		requests:           make([]transactionRequest, 0),
 		idx:                0,
 		committed:          make(chan struct{}),
 	}
+	tx.wg.Add(count)
+	return tx
 }
 
 func (c *MultiTableTransaction) Commit(ctx context.Context) error {
+	c.wg.Wait()
+
 	c.mx.Lock()
 	defer c.mx.Unlock()
 
@@ -106,6 +111,7 @@ func (c *MultiTableTransaction) SetQueueOffsetInTx(ctx context.Context, queueId,
 	})
 	c.idx++
 	c.mx.Unlock()
+	c.wg.Done()
 
 	select {
 	case <-ctx.Done():
@@ -189,6 +195,7 @@ func (c *MultiTableTransaction) CreateTableInTx(ctx context.Context, ident table
 	})
 	c.idx++
 	c.mx.Unlock()
+	c.wg.Done()
 
 	select {
 	case <-ctx.Done():
@@ -228,6 +235,7 @@ func (c *MultiTableTransaction) CommitTableInTx(ctx context.Context, ident table
 	})
 	c.idx++
 	c.mx.Unlock()
+	c.wg.Done()
 
 	select {
 	case <-ctx.Done():

@@ -255,6 +255,10 @@ func (t *Transaction) ExpireSnapshots(opts ...ExpireSnapshotsOpt) error {
 		}
 	}
 
+	if len(snapsToDelete) == 0 {
+		return nil
+	}
+
 	updates = append(updates, NewRemoveSnapshotsUpdate(snapsToDelete))
 
 	return t.apply(updates, nil)
