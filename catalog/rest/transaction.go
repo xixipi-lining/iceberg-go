@@ -2,6 +2,7 @@ package rest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -26,7 +27,7 @@ type MultiTableTransaction struct {
 	idx       int
 	committed chan struct{}
 	err       error
-	resp      []any
+	resp      []transactionResponse
 }
 
 func NewTransactionCatalog(cat *Catalog) (catalog.TransactionCatalog, error) {
@@ -84,7 +85,7 @@ func (c *MultiTableTransaction) Commit(ctx context.Context) error {
 		return errors.New("no requests to commit")
 	}
 
-	ret, err := doPost[[]transactionRequest, []any](ctx, c.baseURI, []string{"transaction"}, c.requests, c.cl, nil)
+	ret, err := doPost[[]transactionRequest, []transactionResponse](ctx, c.baseURI, []string{"transaction"}, c.requests, c.cl, nil)
 	if err != nil {
 		return err
 	}
@@ -140,6 +141,8 @@ type transactionRequest struct {
 	UpdateTable    *updateTableRequest `json:"update_table"`
 	SetQueueOffset *queueOffset        `json:"set_queue_offset"`
 }
+
+type transactionResponse = json.RawMessage
 
 func (c *MultiTableTransaction) CreateTableInTx(ctx context.Context, ident table.Identifier, schema *iceberg.Schema, opts ...catalog.CreateTableOpt) (*table.Table, error) {
 	ns, tbl, err := splitIdentForPath(ident)
@@ -207,7 +210,11 @@ func (c *MultiTableTransaction) CreateTableInTx(ctx context.Context, ident table
 		return nil, fmt.Errorf("transaction commit error %w", c.err)
 	}
 
-	ret := c.resp[idx].(*loadTableResponse)
+	var ret loadTableResponse
+	if err := json.Unmarshal(c.resp[idx], &ret); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal loadTableResponse: %w", err)
+	}
+
 	config := maps.Clone(c.Catalog.props)
 	maps.Copy(config, ret.Metadata.Properties())
 	maps.Copy(config, ret.Config)
@@ -247,7 +254,10 @@ func (c *MultiTableTransaction) CommitTableInTx(ctx context.Context, ident table
 		return nil, "", fmt.Errorf("transaction commit error %w", c.err)
 	}
 
-	ret := c.resp[idx].(*commitTableResponse)
+	var ret commitTableResponse
+	if err := json.Unmarshal(c.resp[idx], &ret); err != nil {
+		return nil, "", fmt.Errorf("failed to unmarshal commitTableResponse: %w", err)
+	}
 
 	config := maps.Clone(c.Catalog.props)
 	maps.Copy(config, ret.Metadata.Properties())
