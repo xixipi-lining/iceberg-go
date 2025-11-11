@@ -142,9 +142,7 @@ func (c *MultiTableTransaction) Commit(ctx context.Context) error {
 
 func (c *MultiTableTransaction) commit() func(context.Context, bun.Tx) error {
 	return func(ctx context.Context, tx bun.Tx) error {
-		fmt.Println("waiting for operations to complete")
 		c.wg.Wait()
-		fmt.Println("operations completed")
 
 		c.mx.Lock()
 		defer c.mx.Unlock()
