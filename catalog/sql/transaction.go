@@ -99,6 +99,7 @@ func (c *TransactionCatalog) setQueueOffset(queueId, offset string) func(context
 			Model(item).
 			On("CONFLICT (queue_id) DO UPDATE").
 			Set("position = EXCLUDED.position").
+			Set("updated_at = CURRENT_TIMESTAMP").
 			Exec(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to set queue offset: %w", err)
