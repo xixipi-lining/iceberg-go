@@ -85,6 +85,8 @@ func (c *MultiTableTransaction) Commit(ctx context.Context) error {
 		return errors.New("no requests to commit")
 	}
 
+	defer close(c.committed)
+
 	ret, err := doPost[[]transactionRequest, []transactionResponse](ctx, c.baseURI, []string{"transaction"}, c.requests, c.cl, nil)
 	if err != nil {
 		return err
@@ -92,7 +94,6 @@ func (c *MultiTableTransaction) Commit(ctx context.Context) error {
 
 	c.resp = ret
 	c.err = err
-	close(c.committed)
 	return err
 }
 
