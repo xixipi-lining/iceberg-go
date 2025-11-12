@@ -153,11 +153,16 @@ type sqlIcebergNamespaceProps struct {
 }
 
 func withReadTx[R any](ctx context.Context, db *bun.DB, fn func(context.Context, bun.Tx) (R, error)) (result R, err error) {
-	db.RunInTx(ctx, &sql.TxOptions{ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
+	txErr := db.RunInTx(ctx, &sql.TxOptions{ReadOnly: true}, func(ctx context.Context, tx bun.Tx) error {
 		result, err = fn(ctx, tx)
 
 		return err
 	})
+
+	// If RunInTx itself failed (e.g., couldn't start transaction), return that error
+	if txErr != nil {
+		return result, txErr
+	}
 
 	return
 }
