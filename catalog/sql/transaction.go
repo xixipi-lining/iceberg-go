@@ -44,9 +44,9 @@ const (
 type sqlIcebergOutboxMessage struct {
 	bun.BaseModel `bun:"table:iceberg_outbox_messages"`
 
-	Id        int64 `bun:",pk,autoincrement"`
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Id        int64     `bun:",pk,autoincrement"`
+	CreatedAt time.Time `bun:"created_at,nullzero,notnull,default:current_timestamp"`
+	UpdatedAt time.Time `bun:"updated_at,nullzero,notnull,default:current_timestamp"`
 
 	MessageType OutboxMessageType
 	Status      OutboxMessageStatus
@@ -433,7 +433,7 @@ type OutboxMessage struct {
 func (c *TransactionCatalog) ListOutboxMessages(ctx context.Context, count int) ([]OutboxMessage, error) {
 	msgs, err := withReadTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) ([]sqlIcebergOutboxMessage, error) {
 		var messages []sqlIcebergOutboxMessage
-		err := tx.NewSelect().Model(&messages).Where("status = ?", OutboxMessageStatusPending).Limit(count).Order("id").Scan(ctx)
+		err := tx.NewSelect().Model(&messages).Where("status = ?", OutboxMessageStatusPending).Limit(count).Order("created_at").Scan(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -453,11 +453,15 @@ func (c *TransactionCatalog) ListOutboxMessages(ctx context.Context, count int) 
 			Namespace:   msg.Namespace,
 			TableName:   msg.TableName,
 		}
-		if len(msg.Message) > 0 {
+		switch msg.MessageType {
+		case OutboxMessageTypeCreateNamespace:
+		case OutboxMessageTypeCreateTable, OutboxMessageTypeCommitTable:
 			err := json.Unmarshal(msg.Message, &om.Message)
 			if err != nil {
 				return nil, fmt.Errorf("failed to unmarshal outbox message: %w", err)
 			}
+		default:
+			return nil, fmt.Errorf("unsupported outbox message type: %s", msg.MessageType)
 		}
 		ret[i] = om
 	}

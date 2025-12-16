@@ -22,8 +22,8 @@ func (c *Catalog) FollowCommitTable(ctx context.Context, identifier table.Identi
 		return err
 	}
 
-	if *currentGlueTable.StorageDescriptor.Location != previousMetadataLocation {
-		return fmt.Errorf("previous metadata location %s does not match current metadata location %s", previousMetadataLocation, *currentGlueTable.StorageDescriptor.Location)
+	if currentGlueTable.Parameters[tableParamMetadataLocation] != previousMetadataLocation {
+		return fmt.Errorf("previous metadata location %s does not match current metadata location %s", previousMetadataLocation, currentGlueTable.Parameters[tableParamMetadataLocation])
 	}
 
 	ctx = utils.WithAwsConfig(ctx, c.awsCfg)
