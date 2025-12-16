@@ -3,9 +3,9 @@ package sql
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"maps"
 	"strings"
 	"sync"
@@ -21,41 +21,58 @@ import (
 
 var ErrNoChanges = errors.New("no changes")
 
-type sqlIcebergQueueOffset struct {
-	bun.BaseModel `bun:"table:iceberg_queue_offset"`
+type OutboxMessageType string
 
-	QueueId   string    `bun:",pk"`
-	Position  string    `bun:",notnull"`
-	CreatedAt time.Time `bun:"created_at,notnull,default:current_timestamp"`
-	UpdatedAt time.Time `bun:"updated_at,notnull,default:current_timestamp"`
+const (
+	OutboxMessageTypeCreateNamespace OutboxMessageType = "create_namespace"
+	OutboxMessageTypeCreateTable     OutboxMessageType = "create_table"
+	OutboxMessageTypeCommitTable     OutboxMessageType = "commit_table"
+)
+
+type OutboxMessageData struct {
+	PreviousMetadataLocation string `json:"previous_metadata_location"`
+	MetadataLocation         string `json:"metadata_location"`
 }
 
-func (o *sqlIcebergQueueOffset) BeforeUpdate(ctx context.Context, query *bun.UpdateQuery) error {
-	o.UpdatedAt = time.Now()
-	return nil
+type OutboxMessageStatus int8
+
+const (
+	OutboxMessageStatusPending OutboxMessageStatus = 0
+	OutboxMessageStatusDone    OutboxMessageStatus = 1
+)
+
+type sqlIcebergOutboxMessage struct {
+	bun.BaseModel `bun:"table:iceberg_outbox_messages"`
+
+	Id        int64 `bun:",pk,autoincrement"`
+	CreatedAt time.Time
+	UpdatedAt time.Time
+
+	MessageType OutboxMessageType
+	Status      OutboxMessageStatus
+	Namespace   string
+	TableName   string
+	Message     []byte
 }
 
 type TransactionCatalog struct {
 	*Catalog
-	follower catalog.FollowerCatalog
 }
 
 type MultiTableTransaction struct {
 	*TransactionCatalog
 
-	mx          sync.Mutex
-	wg          sync.WaitGroup
-	operations  []func(context.Context, bun.Tx) error
-	followerOps []func() error
-	committed   chan struct{}
-	err         error
+	mx         sync.Mutex
+	wg         sync.WaitGroup
+	operations []func(context.Context, bun.Tx) error
+	committed  chan struct{}
+	err        error
 }
 
-func NewTransactionCatalog(db *bun.DB, props iceberg.Properties, follower catalog.FollowerCatalog) (catalog.TransactionCatalog, error) {
+func NewTransactionCatalog(db *bun.DB, props iceberg.Properties) (*TransactionCatalog, error) {
 	cat := &Catalog{db: db, name: "", props: props}
 	tcat := &TransactionCatalog{
-		Catalog:  cat,
-		follower: follower,
+		Catalog: cat,
 	}
 
 	if props.GetBool(initCatalogTablesKey, true) {
@@ -71,70 +88,25 @@ func NewTransactionCatalog(db *bun.DB, props iceberg.Properties, follower catalo
 	return tcat, nil
 }
 
-func (c *TransactionCatalog) CreateQueueOffsetTable(ctx context.Context) error {
-	_, err := c.db.NewCreateTable().Model((*sqlIcebergQueueOffset)(nil)).
-		IfNotExists().Exec(ctx)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (c *TransactionCatalog) ensureTablesExist() error {
-	return c.CreateQueueOffsetTable(context.Background())
-}
-
-func (c *TransactionCatalog) SetQueueOffset(ctx context.Context, queueId, offset string) error {
-	return withWriteTx(ctx, c.db, c.setQueueOffset(queueId, offset))
-}
-
-func (c *TransactionCatalog) setQueueOffset(queueId, offset string) func(context.Context, bun.Tx) error {
-	return func(ctx context.Context, tx bun.Tx) error {
-		item := &sqlIcebergQueueOffset{
-			QueueId:  queueId,
-			Position: offset,
-		}
-		_, err := tx.NewInsert().
-			Model(item).
-			On("CONFLICT (queue_id) DO UPDATE").
-			Set("position = EXCLUDED.position").
-			Set("updated_at = CURRENT_TIMESTAMP").
-			Exec(ctx)
-		if err != nil {
-			return fmt.Errorf("failed to set queue offset: %w", err)
-		}
-
-		return nil
-	}
-}
-
-func (c *TransactionCatalog) GetQueueOffset(ctx context.Context, queueId string) (string, error) {
-	return withReadTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) (string, error) {
-		var offset string
-		err := tx.NewSelect().Column("position").Model((*sqlIcebergQueueOffset)(nil)).Where("queue_id = ?", queueId).Scan(ctx, &offset)
-		if errors.Is(err, sql.ErrNoRows) {
-			return "", nil
-		}
-		if err != nil {
-			return "", fmt.Errorf("failed to get queue offset: %w", err)
-		}
-
-		return offset, nil
-	})
-}
-
-func (c *TransactionCatalog) NewMultiTableTransaction(count int) catalog.MultiTableTransaction {
+func (c *TransactionCatalog) NewMultiTableTransaction(count int) *MultiTableTransaction {
 	tx := &MultiTableTransaction{
 		TransactionCatalog: c,
 
-		operations:  make([]func(context.Context, bun.Tx) error, 0),
-		followerOps: make([]func() error, 0),
-		committed:   make(chan struct{}),
+		operations: make([]func(context.Context, bun.Tx) error, 0),
+		committed:  make(chan struct{}),
 	}
 
 	tx.wg.Add(count)
 	return tx
+}
+
+func (c *TransactionCatalog) ensureTablesExist() error {
+	_, err := c.db.NewCreateTable().Model((*sqlIcebergOutboxMessage)(nil)).
+		IfNotExists().Exec(context.Background())
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *MultiTableTransaction) Commit(ctx context.Context) error {
@@ -162,13 +134,6 @@ func (c *MultiTableTransaction) commit() func(context.Context, bun.Tx) error {
 			}
 		}
 
-		for _, op := range c.followerOps {
-			err := op()
-			if err != nil {
-				log.Printf("failed to follow create table: %v", err)
-			}
-		}
-
 		return nil
 	}
 }
@@ -177,14 +142,62 @@ func (c *MultiTableTransaction) CommitTx() func(context.Context, bun.Tx) error {
 	return c.commit()
 }
 
-func (c *MultiTableTransaction) SetQueueOffsetInTx(ctx context.Context, queueId, offset string) error {
+func (c *MultiTableTransaction) CreateNamespaceInTx(ctx context.Context, namespace table.Identifier, props iceberg.Properties) error {
+	if err := checkValidNamespace(namespace); err != nil {
+		return err
+	}
+
+	exists, err := c.namespaceExists(ctx, strings.Join(namespace, "."))
+	if err != nil {
+		return err
+	}
+
+	if exists {
+		return fmt.Errorf("%w: %s", catalog.ErrNamespaceAlreadyExists, strings.Join(namespace, "."))
+	}
+
+	if len(props) == 0 {
+		props = minimalNamespaceProps
+	}
+
+	nsToCreate := strings.Join(namespace, ".")
+
+	dbOp := func(ctx context.Context, tx bun.Tx) error {
+		toInsert := make([]sqlIcebergNamespaceProps, 0, len(props))
+		for k, v := range props {
+			toInsert = append(toInsert, sqlIcebergNamespaceProps{
+				CatalogName:   c.name,
+				Namespace:     nsToCreate,
+				PropertyKey:   k,
+				PropertyValue: sql.NullString{String: v, Valid: true},
+			})
+		}
+
+		_, err := tx.NewInsert().Model(&toInsert).Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("error inserting namespace properties for namespace '%s': %w", namespace, err)
+		}
+
+		return nil
+	}
+
+	msgOp := func(ctx context.Context, tx bun.Tx) error {
+		_, err := tx.NewInsert().Model(&sqlIcebergOutboxMessage{
+			MessageType: OutboxMessageTypeCreateNamespace,
+			Namespace:   nsToCreate,
+		}).Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to create outbox message: %w", err)
+		}
+		return nil
+	}
+
 	c.mx.Lock()
 	if c.operations == nil {
 		c.operations = make([]func(context.Context, bun.Tx) error, 0)
-		c.followerOps = make([]func() error, 0)
 		c.committed = make(chan struct{})
 	}
-	c.operations = append(c.operations, c.setQueueOffset(queueId, offset))
+	c.operations = append(c.operations, dbOp, msgOp)
 	c.mx.Unlock()
 	c.wg.Done()
 
@@ -197,6 +210,7 @@ func (c *MultiTableTransaction) SetQueueOffsetInTx(ctx context.Context, queueId,
 	if c.err != nil {
 		return fmt.Errorf("transaction commit error %w", c.err)
 	}
+
 	return nil
 }
 
@@ -224,18 +238,33 @@ func (c *MultiTableTransaction) CreateTableInTx(ctx context.Context, ident table
 		return nil
 	}
 
+	msgOp := func(ctx context.Context, tx bun.Tx) error {
+		msg, err := json.Marshal(OutboxMessageData{
+			PreviousMetadataLocation: staged.MetadataLocation(),
+			MetadataLocation:         staged.MetadataLocation(),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to marshal create table message: %w", err)
+		}
+
+		_, err = tx.NewInsert().Model(&sqlIcebergOutboxMessage{
+			MessageType: OutboxMessageTypeCreateTable,
+			Message:     msg,
+			Namespace:   ns,
+			TableName:   tblIdent,
+		}).Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to create outbox message: %w", err)
+		}
+		return nil
+	}
+
 	c.mx.Lock()
 	if c.operations == nil {
 		c.operations = make([]func(context.Context, bun.Tx) error, 0)
-		c.followerOps = make([]func() error, 0)
 		c.committed = make(chan struct{})
 	}
-	c.operations = append(c.operations, dbOp)
-	if c.follower != nil {
-		c.followerOps = append(c.followerOps, func() error {
-			return c.follower.FollowCreateTable(ctx, staged)
-		})
-	}
+	c.operations = append(c.operations, dbOp, msgOp)
 	c.mx.Unlock()
 	c.wg.Done()
 
@@ -324,23 +353,33 @@ func (c *MultiTableTransaction) CommitTableInTx(ctx context.Context, ident table
 		return nil
 	}
 
+	msgOp := func(ctx context.Context, tx bun.Tx) error {
+		msg, err := json.Marshal(OutboxMessageData{
+			PreviousMetadataLocation: current.MetadataLocation(),
+			MetadataLocation:         staged.MetadataLocation(),
+		})
+		if err != nil {
+			return fmt.Errorf("failed to marshal commit table message: %w", err)
+		}
+
+		_, err = tx.NewInsert().Model(&sqlIcebergOutboxMessage{
+			MessageType: OutboxMessageTypeCommitTable,
+			Message:     msg,
+			Namespace:   strings.Join(ns, "."),
+			TableName:   tblName,
+		}).Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to create outbox message: %w", err)
+		}
+		return nil
+	}
+
 	c.mx.Lock()
 	if c.operations == nil {
 		c.operations = make([]func(context.Context, bun.Tx) error, 0)
-		c.followerOps = make([]func() error, 0)
 		c.committed = make(chan struct{})
 	}
-	c.operations = append(c.operations, dbOp)
-	if c.follower != nil {
-		c.followerOps = append(c.followerOps, func() error {
-			previousMetadataLocation := ""
-			if current != nil {
-				previousMetadataLocation = current.MetadataLocation()
-			}
-
-			return c.follower.FollowCommitTable(ctx, &previousMetadataLocation, staged)
-		})
-	}
+	c.operations = append(c.operations, dbOp, msgOp)
 	c.mx.Unlock()
 	c.wg.Done()
 
@@ -379,4 +418,61 @@ func (c *MultiTableTransaction) stageCommitTable(ctx context.Context, ident tabl
 	}
 
 	return current, staged, nil
+}
+
+type OutboxMessage struct {
+	Id          int64
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	MessageType OutboxMessageType
+	Namespace   string
+	TableName   string
+	Message     OutboxMessageData
+}
+
+func (c *TransactionCatalog) ListOutboxMessages(ctx context.Context, count int) ([]OutboxMessage, error) {
+	msgs, err := withReadTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) ([]sqlIcebergOutboxMessage, error) {
+		var messages []sqlIcebergOutboxMessage
+		err := tx.NewSelect().Model(&messages).Where("status = ?", OutboxMessageStatusPending).Limit(count).Order("id").Scan(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return messages, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	ret := make([]OutboxMessage, len(msgs))
+	for i, msg := range msgs {
+		om := OutboxMessage{
+			Id:          msg.Id,
+			CreatedAt:   msg.CreatedAt,
+			UpdatedAt:   msg.UpdatedAt,
+			MessageType: msg.MessageType,
+			Namespace:   msg.Namespace,
+			TableName:   msg.TableName,
+		}
+		if len(msg.Message) > 0 {
+			err := json.Unmarshal(msg.Message, &om.Message)
+			if err != nil {
+				return nil, fmt.Errorf("failed to unmarshal outbox message: %w", err)
+			}
+		}
+		ret[i] = om
+	}
+	return ret, nil
+}
+
+func (c *TransactionCatalog) MarkOutboxMessagesDone(ctx context.Context, id int64) error {
+	return withWriteTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) error {
+		_, err := tx.NewUpdate().Model((*sqlIcebergOutboxMessage)(nil)).
+			Set("status = ?", OutboxMessageStatusDone).
+			Where("id = ?", id).
+			Exec(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to mark outbox messages done: %w", err)
+		}
+		return nil
+	})
 }
