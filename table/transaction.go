@@ -228,7 +228,7 @@ func (t *Transaction) ExpireSnapshots(opts ...ExpireSnapshotsOpt) error {
 		for {
 			snap, err := t.meta.SnapshotByID(snapId)
 			if err != nil {
-				return err
+				break
 			}
 
 			snapAge := time.Now().UnixMilli() - snap.TimestampMs
