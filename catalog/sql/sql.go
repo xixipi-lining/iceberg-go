@@ -347,7 +347,11 @@ func (c *Catalog) CommitTable(ctx context.Context, ident table.Identifier, reqs 
 		return current.Metadata(), current.MetadataLocation(), nil
 	}
 
-	if err := internal.WriteMetadata(ctx, staged.Metadata(), staged.MetadataLocation(), staged.Properties()); err != nil {
+	props := make(iceberg.Properties)
+	maps.Copy(props, c.props)
+	maps.Copy(props, staged.Properties())
+
+	if err := internal.WriteMetadata(ctx, staged.Metadata(), staged.MetadataLocation(), props); err != nil {
 		return nil, "", err
 	}
 
