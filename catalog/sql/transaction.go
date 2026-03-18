@@ -143,6 +143,13 @@ func (c *MultiTableTransaction) CommitTx() func(context.Context, bun.Tx) error {
 }
 
 func (c *MultiTableTransaction) CreateNamespaceInTx(ctx context.Context, namespace table.Identifier, props iceberg.Properties) error {
+	done := false
+	defer func() {
+		if !done {
+			c.wg.Done()
+		}
+	}()
+
 	if err := checkValidNamespace(namespace); err != nil {
 		return err
 	}
@@ -199,6 +206,8 @@ func (c *MultiTableTransaction) CreateNamespaceInTx(ctx context.Context, namespa
 	}
 	c.operations = append(c.operations, dbOp, msgOp)
 	c.mx.Unlock()
+
+	done = true
 	c.wg.Done()
 
 	select {
@@ -215,6 +224,13 @@ func (c *MultiTableTransaction) CreateNamespaceInTx(ctx context.Context, namespa
 }
 
 func (c *MultiTableTransaction) CreateTableInTx(ctx context.Context, ident table.Identifier, sc *iceberg.Schema, opts ...catalog.CreateTableOpt) (*table.Table, error) {
+	done := false
+	defer func() {
+		if !done {
+			c.wg.Done()
+		}
+	}()
+
 	staged, err := c.stageCreateTable(ctx, ident, sc, opts...)
 	if err != nil {
 		return nil, err
@@ -266,6 +282,8 @@ func (c *MultiTableTransaction) CreateTableInTx(ctx context.Context, ident table
 	}
 	c.operations = append(c.operations, dbOp, msgOp)
 	c.mx.Unlock()
+
+	done = true
 	c.wg.Done()
 
 	select {
@@ -303,6 +321,12 @@ func (c *MultiTableTransaction) stageCreateTable(ctx context.Context, ident tabl
 }
 
 func (c *MultiTableTransaction) CommitTableInTx(ctx context.Context, ident table.Identifier, reqs []table.Requirement, updates []table.Update) (table.Metadata, string, error) {
+	done := false
+	defer func() {
+		if !done {
+			c.wg.Done()
+		}
+	}()
 	ns := catalog.NamespaceFromIdent(ident)
 	tblName := catalog.TableNameFromIdent(ident)
 
@@ -381,6 +405,8 @@ func (c *MultiTableTransaction) CommitTableInTx(ctx context.Context, ident table
 	}
 	c.operations = append(c.operations, dbOp, msgOp)
 	c.mx.Unlock()
+
+	done = true
 	c.wg.Done()
 
 	select {
