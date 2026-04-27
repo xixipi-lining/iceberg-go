@@ -15,7 +15,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-package gnar
+package sql
 
 import (
 	"context"
