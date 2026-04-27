@@ -90,9 +90,12 @@ var (
 	ErrAuthorizationExpired = fmt.Errorf("%w: authorization expired", ErrRESTError)
 	ErrServiceUnavailable   = fmt.Errorf("%w: service unavailable", ErrRESTError)
 	ErrServerError          = fmt.Errorf("%w: server error", ErrRESTError)
-	ErrCommitFailed         = fmt.Errorf("%w: commit failed, refresh and try again", ErrRESTError)
-	ErrCommitStateUnknown   = fmt.Errorf("%w: commit failed due to unknown reason", ErrRESTError)
-	ErrOAuthError           = fmt.Errorf("%w: oauth error", ErrRESTError)
+	// ErrCommitFailed wraps both ErrRESTError and table.ErrCommitFailed
+	// so that callers can detect retryable commit conflicts via
+	// errors.Is(err, table.ErrCommitFailed).
+	ErrCommitFailed       = fmt.Errorf("%w: %w", ErrRESTError, table.ErrCommitFailed)
+	ErrCommitStateUnknown = fmt.Errorf("%w: commit failed due to unknown reason", ErrRESTError)
+	ErrOAuthError         = fmt.Errorf("%w: oauth error", ErrRESTError)
 )
 
 func init() {
@@ -575,7 +578,21 @@ func setupOAuthManager(r *Catalog, cl *http.Client, opts *options) AuthManager {
 
 	// Add skip oauth so we don't get in cycles trying to refresh the token
 	ctx := context.WithValue(context.Background(), skipOAuth, true)
-	ctx = context.WithValue(ctx, oauth2.HTTPClient, cl)
+
+	// If a separate TLS config is provided for the OAuth2 server, create a
+	// dedicated HTTP client for token requests instead of reusing the catalog
+	// client. This is needed when the OAuth2 server is a different host with
+	// different TLS requirements.
+	oauthClient := cl
+	if opts.oauthTLSConfig != nil {
+		oauthClient = &http.Client{
+			Transport: &http.Transport{
+				Proxy:           http.ProxyFromEnvironment,
+				TLSClientConfig: opts.oauthTLSConfig,
+			},
+		}
+	}
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, oauthClient)
 
 	return &Oauth2AuthManager{
 		tokenSource: cfg.TokenSource(ctx),
@@ -627,6 +644,12 @@ func (r *Catalog) createSession(ctx context.Context, opts *options) (*http.Clien
 
 	for k, v := range opts.headers {
 		session.defaultHeaders.Set(k, v)
+	}
+
+	for k, v := range opts.additionalProps {
+		if headerKey, found := strings.CutPrefix(k, "header."); found {
+			session.defaultHeaders.Set(headerKey, v)
+		}
 	}
 
 	if opts.authManager != nil {
