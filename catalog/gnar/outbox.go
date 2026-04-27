@@ -56,16 +56,18 @@ type sqlIcebergOutboxMessage struct {
 	Id        int64     `bun:",pk,autoincrement"`
 	CreatedAt time.Time `bun:"created_at,nullzero,notnull,default:current_timestamp"`
 	UpdatedAt time.Time `bun:"updated_at,nullzero,notnull,default:current_timestamp"`
+	Status    OutboxMessageStatus
+
+	CatalogName    string
+	TableNamespace string
+	TableName      string
 
 	MessageType OutboxMessageType
-	Status      OutboxMessageStatus
-	Namespace   string
-	TableName   string
 	Message     []byte
 }
 
 // insertOutboxMessage inserts an outbox message within the given transaction.
-func insertOutboxMessage(ctx context.Context, tx bun.Tx, msgType OutboxMessageType, namespace, tableName string, data *OutboxMessageData) error {
+func insertOutboxMessage(ctx context.Context, tx bun.Tx, catalogName, tableNamespace, tableName string, msgType OutboxMessageType, data *OutboxMessageData) error {
 	var message []byte
 
 	if data != nil {
@@ -77,15 +79,89 @@ func insertOutboxMessage(ctx context.Context, tx bun.Tx, msgType OutboxMessageTy
 	}
 
 	_, err := tx.NewInsert().Model(&sqlIcebergOutboxMessage{
-		MessageType: msgType,
-		Status:      OutboxMessageStatusPending,
-		Namespace:   namespace,
-		TableName:   tableName,
-		Message:     message,
+		Status:         OutboxMessageStatusPending,
+		CatalogName:    catalogName,
+		TableNamespace: tableNamespace,
+		TableName:      tableName,
+		MessageType:    msgType,
+		Message:        message,
 	}).Exec(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to insert outbox message: %w", err)
 	}
 
 	return nil
+}
+
+func listOutboxMessages(ctx context.Context, tx bun.Tx, catalogName, tableNamespace string, limit int) ([]sqlIcebergOutboxMessage, error) {
+	var outboxMessages []sqlIcebergOutboxMessage
+	err := tx.NewSelect().Model(&outboxMessages).
+		Where("catalog_name = ?", catalogName).
+		Where("table_namespace = ?", tableNamespace).
+		Where("status = ?", OutboxMessageStatusPending).
+		Limit(limit).
+		Scan(ctx)
+	return outboxMessages, err
+}
+
+func markOutboxMessageAsDone(ctx context.Context, tx bun.Tx, catalogName, tableNamespace string, id int64) error {
+	res, err := tx.NewUpdate().Model(&sqlIcebergOutboxMessage{}).
+		Where("catalog_name = ?", catalogName).
+		Where("table_namespace = ?", tableNamespace).
+		Where("id = ?", id).
+		Set("status = ?", OutboxMessageStatusDone).
+		Exec(ctx)
+
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to mark outbox message as done: %v", err)
+	}
+	if n == 0 {
+		return fmt.Errorf("outbox message not found: %v", id)
+	}
+	return nil
+}
+
+type OutboxMessage struct {
+	Id             int64
+	MessageType    OutboxMessageType
+	TableNamespace string
+	TableName      string
+	Data           OutboxMessageData
+}
+
+func (c *Catalog) ListOutboxMessages(ctx context.Context, tableNamespace string, limit int) ([]OutboxMessage, error) {
+	msgs, err := withReadTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) ([]sqlIcebergOutboxMessage, error) {
+		return listOutboxMessages(ctx, tx, c.name, tableNamespace, limit)
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	ret := make([]OutboxMessage, len(msgs))
+	for i, msg := range msgs {
+		var data OutboxMessageData
+		var err error
+		if msg.Message != nil {
+			err = json.Unmarshal(msg.Message, &data)
+			if err != nil {
+				return nil, fmt.Errorf("failed to unmarshal outbox message data: %w", err)
+			}
+		}
+		ret[i] = OutboxMessage{
+			Id:             msg.Id,
+			MessageType:    msg.MessageType,
+			TableNamespace: msg.TableNamespace,
+			TableName:      msg.TableName,
+			Data:           data,
+		}
+	}
+	return ret, nil
+}
+
+func (c *Catalog) MarkOutboxMessageAsDone(ctx context.Context, tableNamespace string, id int64) error {
+	err := withWriteTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) error {
+		return markOutboxMessageAsDone(ctx, tx, c.name, tableNamespace, id)
+	})
+	return err
 }

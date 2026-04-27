@@ -332,7 +332,7 @@ func (c *Catalog) CreateTable(ctx context.Context, ident table.Identifier, sc *i
 			return fmt.Errorf("failed to create table: %w", err)
 		}
 
-		return insertOutboxMessage(ctx, tx, OutboxMessageTypeCreateTable, ns, tblIdent, &OutboxMessageData{
+		return insertOutboxMessage(ctx, tx, c.name, ns, tblIdent, OutboxMessageTypeCreateTable, &OutboxMessageData{
 			MetadataLocation: staged.MetadataLocation(),
 		})
 	})
@@ -391,7 +391,7 @@ func (c *Catalog) CommitTable(ctx context.Context, ident table.Identifier, reqs 
 				return fmt.Errorf("table has been updated by another process: %s.%s", strings.Join(ns, "."), tblName)
 			}
 
-			return insertOutboxMessage(ctx, tx, OutboxMessageTypeCommitTable, strings.Join(ns, "."), tblName, &OutboxMessageData{
+			return insertOutboxMessage(ctx, tx, c.name, strings.Join(ns, "."), tblName, OutboxMessageTypeCommitTable, &OutboxMessageData{
 				PreviousMetadataLocation: "",
 				MetadataLocation:         staged.MetadataLocation(),
 			})
@@ -408,7 +408,7 @@ func (c *Catalog) CommitTable(ctx context.Context, ident table.Identifier, reqs 
 			return fmt.Errorf("failed to create table: %w", err)
 		}
 
-		return insertOutboxMessage(ctx, tx, OutboxMessageTypeCommitTable, strings.Join(ns, "."), tblName, &OutboxMessageData{
+		return insertOutboxMessage(ctx, tx, c.name, strings.Join(ns, "."), tblName, OutboxMessageTypeCreateTable, &OutboxMessageData{
 			PreviousMetadataLocation: current.MetadataLocation(),
 			MetadataLocation:         staged.MetadataLocation(),
 		})
@@ -1191,7 +1191,7 @@ func (c *Catalog) CommitTransaction(ctx context.Context, commits []table.TableCo
 				return fmt.Errorf("%w: table has been updated by another process: %s.%s", catalog.ErrCommitFailed, sc.ns, sc.tblName)
 			}
 
-			if err := insertOutboxMessage(ctx, tx, OutboxMessageTypeCommitTable, sc.ns, sc.tblName, &OutboxMessageData{
+			if err := insertOutboxMessage(ctx, tx, c.name, sc.ns, sc.tblName, OutboxMessageTypeCommitTable, &OutboxMessageData{
 				PreviousMetadataLocation: sc.current.MetadataLocation(),
 				MetadataLocation:         sc.staged.MetadataLocation(),
 			}); err != nil {
