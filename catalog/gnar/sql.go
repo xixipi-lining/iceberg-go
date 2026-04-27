@@ -69,7 +69,7 @@ const (
 )
 
 func init() {
-	catalog.Register("gnar", catalog.RegistrarFunc(func(ctx context.Context, name string, p iceberg.Properties) (c catalog.Catalog, err error) {
+	catalog.Register("sql", catalog.RegistrarFunc(func(ctx context.Context, name string, p iceberg.Properties) (c catalog.Catalog, err error) {
 		driver, ok := p[DriverKey]
 		if !ok {
 			return nil, errors.New("must provide driver to pass to sql.Open")
@@ -88,11 +88,11 @@ func init() {
 
 		defer func() {
 			if r := recover(); r != nil {
-				err = fmt.Errorf("failed to create Gnar catalog: %v", r)
+				err = fmt.Errorf("failed to create SQL catalog: %v", r)
 			}
 		}()
 
-		return NewCatalog(p.Get(name, "gnar"), sqldb, SupportedDialect(dialect), p)
+		return NewCatalog(p.Get(name, "sql"), sqldb, SupportedDialect(dialect), p)
 	}))
 }
 
@@ -216,7 +216,7 @@ func NewCatalog(name string, db *sql.DB, dialect SupportedDialect, props iceberg
 func (c *Catalog) Name() string { return c.name }
 
 func (c *Catalog) CatalogType() catalog.Type {
-	return catalog.Type("gnar")
+	return catalog.SQL
 }
 
 func (c *Catalog) CreateSQLTables(ctx context.Context) error {
