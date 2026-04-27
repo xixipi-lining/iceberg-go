@@ -18,10 +18,12 @@
 package sql
 
 import (
+	"cmp"
 	"context"
 	"database/sql"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/apache/iceberg-go"
@@ -194,5 +196,119 @@ func (c *Catalog) CommitTableInTx(ctx context.Context, ident table.Identifier, r
 			PreviousMetadataLocation: current.MetadataLocation(),
 			MetadataLocation:         staged.MetadataLocation(),
 		})
+	}, nil
+}
+
+// CommitTransactionInTx copy CommitTransaction except the return value
+func (c *Catalog) CommitTransactionInTx(ctx context.Context, commits []table.TableCommit) (func(context.Context, bun.Tx) error, error) {
+	if len(commits) == 0 {
+		return nil, catalog.ErrEmptyCommitList
+	}
+
+	seen := make(map[string]struct{})
+
+	for _, commit := range commits {
+		if len(commit.Identifier) == 0 {
+			return nil, catalog.ErrMissingIdentifier
+		}
+
+		key := strings.Join(commit.Identifier, ".")
+		if _, ok := seen[key]; ok {
+			return nil, fmt.Errorf("duplicate table in commit list: %s", key)
+		}
+		seen[key] = struct{}{}
+	}
+
+	// Phase 1: Load current state and stage all table updates.
+	// We do this outside the write transaction to minimize the time
+	// the DB transaction is held open.
+	type stagedCommit struct {
+		ident   table.Identifier
+		current *table.Table
+		ns      string
+		tblName string
+		staged  *table.StagedTable
+	}
+
+	stagedCommits := make([]stagedCommit, 0, len(commits))
+	for _, commit := range commits {
+		ns := catalog.NamespaceFromIdent(commit.Identifier)
+		tblName := catalog.TableNameFromIdent(commit.Identifier)
+
+		current, err := c.LoadTable(ctx, commit.Identifier)
+		if err != nil {
+			return nil, err
+		}
+
+		staged, err := internal.UpdateAndStageTable(ctx, current, commit.Identifier, commit.Requirements, commit.Updates, c)
+		if err != nil {
+			return nil, err
+		}
+
+		// Skip tables with no actual changes.
+		if current != nil && staged.Metadata().Equals(current.Metadata()) {
+			continue
+		}
+
+		// Write the metadata file before the DB transaction.
+		if err := internal.WriteMetadata(ctx, staged.Metadata(), staged.MetadataLocation(), staged.Properties()); err != nil {
+			return nil, err
+		}
+
+		stagedCommits = append(stagedCommits, stagedCommit{
+			ident:   commit.Identifier,
+			current: current,
+			ns:      strings.Join(ns, "."),
+			tblName: tblName,
+			staged:  staged,
+		})
+	}
+
+	if len(stagedCommits) == 0 {
+		return nil, nil // all tables had no changes
+	}
+
+	// Sort stagedCommits by identifier to prevent deadlocks in databases with
+	// row-level locking (e.g., Postgres, MySQL) when multiple transactions
+	// commit the same tables in different orders.
+	slices.SortFunc(stagedCommits, func(a, b stagedCommit) int {
+		return cmp.Compare(strings.Join(a.ident, "."), strings.Join(b.ident, "."))
+	})
+
+	// Phase 2: Apply all DB changes atomically in a single transaction.
+	return func(ctx context.Context, tx bun.Tx) error {
+		for _, sc := range stagedCommits {
+			res, err := tx.NewUpdate().Model(&sqlIcebergTable{
+				CatalogName:              c.name,
+				TableNamespace:           sc.ns,
+				TableName:                sc.tblName,
+				IcebergType:              TableType,
+				MetadataLocation:         sql.NullString{Valid: true, String: sc.staged.MetadataLocation()},
+				PreviousMetadataLocation: sql.NullString{Valid: true, String: sc.current.MetadataLocation()},
+			}).WherePK().Where("metadata_location = ?", sc.current.MetadataLocation()).
+				Where("iceberg_type = ?", TableType).
+				Exec(ctx)
+			if err != nil {
+				return fmt.Errorf("%w: error updating table information: %v", catalog.ErrCommitFailed, err)
+			}
+
+			n, err := res.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("%w: error updating table information: %v", catalog.ErrCommitFailed, err)
+			}
+
+			if n == 0 {
+				return fmt.Errorf("%w: table has been updated by another process: %s.%s", catalog.ErrCommitFailed, sc.ns, sc.tblName)
+			}
+
+			if err := insertOutboxMessage(ctx, tx, c.name, sc.ns, sc.tblName, OutboxMessageTypeCommitTable, &OutboxMessageData{
+				PreviousMetadataLocation: sc.current.MetadataLocation(),
+				MetadataLocation:         sc.staged.MetadataLocation(),
+			}); err != nil {
+				return err
+			}
+		}
+
+		return nil
 	}, nil
 }
