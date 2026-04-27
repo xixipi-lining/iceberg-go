@@ -93,21 +93,19 @@ func insertOutboxMessage(ctx context.Context, tx bun.Tx, catalogName, tableNames
 	return nil
 }
 
-func listOutboxMessages(ctx context.Context, tx bun.Tx, catalogName, tableNamespace string, limit int) ([]sqlIcebergOutboxMessage, error) {
+func listOutboxMessages(ctx context.Context, tx bun.Tx, catalogName string, limit int) ([]sqlIcebergOutboxMessage, error) {
 	var outboxMessages []sqlIcebergOutboxMessage
 	err := tx.NewSelect().Model(&outboxMessages).
 		Where("catalog_name = ?", catalogName).
-		Where("table_namespace = ?", tableNamespace).
 		Where("status = ?", OutboxMessageStatusPending).
 		Limit(limit).
 		Scan(ctx)
 	return outboxMessages, err
 }
 
-func markOutboxMessageAsDone(ctx context.Context, tx bun.Tx, catalogName, tableNamespace string, id int64) error {
+func markOutboxMessageAsDone(ctx context.Context, tx bun.Tx, catalogName string, id int64) error {
 	res, err := tx.NewUpdate().Model(&sqlIcebergOutboxMessage{}).
 		Where("catalog_name = ?", catalogName).
-		Where("table_namespace = ?", tableNamespace).
 		Where("id = ?", id).
 		Set("status = ?", OutboxMessageStatusDone).
 		Exec(ctx)
@@ -130,9 +128,9 @@ type OutboxMessage struct {
 	Data           OutboxMessageData
 }
 
-func (c *Catalog) ListOutboxMessages(ctx context.Context, tableNamespace string, limit int) ([]OutboxMessage, error) {
+func (c *Catalog) ListOutboxMessages(ctx context.Context, limit int) ([]OutboxMessage, error) {
 	msgs, err := withReadTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) ([]sqlIcebergOutboxMessage, error) {
-		return listOutboxMessages(ctx, tx, c.name, tableNamespace, limit)
+		return listOutboxMessages(ctx, tx, c.name, limit)
 	})
 	if err != nil {
 		return nil, err
@@ -159,9 +157,9 @@ func (c *Catalog) ListOutboxMessages(ctx context.Context, tableNamespace string,
 	return ret, nil
 }
 
-func (c *Catalog) MarkOutboxMessageAsDone(ctx context.Context, tableNamespace string, id int64) error {
+func (c *Catalog) MarkOutboxMessageAsDone(ctx context.Context, id int64) error {
 	err := withWriteTx(ctx, c.db, func(ctx context.Context, tx bun.Tx) error {
-		return markOutboxMessageAsDone(ctx, tx, c.name, tableNamespace, id)
+		return markOutboxMessageAsDone(ctx, tx, c.name, id)
 	})
 	return err
 }
