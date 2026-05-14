@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -223,7 +224,7 @@ func (c *Catalog) CommitTableInTx(ctx context.Context, ident table.Identifier, r
 			return err
 		}
 
-		staged, err := internal.UpdateAndStageTable(ctx, current, ident, reqs, updates, &txCatalog{Catalog: c, tx: tx})
+		staged, err := internal.UpdateAndStageTable(ctx, c.props, current, ident, reqs, updates, &txCatalog{Catalog: c, tx: tx})
 		if err != nil {
 			return err
 		}
@@ -233,7 +234,9 @@ func (c *Catalog) CommitTableInTx(ctx context.Context, ident table.Identifier, r
 			return nil
 		}
 
-		if err := internal.WriteMetadata(ctx, staged.Metadata(), staged.MetadataLocation(), staged.Properties()); err != nil {
+		ioProps := maps.Clone(c.props)
+		maps.Copy(ioProps, staged.Properties())
+		if err := internal.WriteMetadata(ctx, staged.Metadata(), staged.MetadataLocation(), ioProps); err != nil {
 			return err
 		}
 
@@ -325,7 +328,7 @@ func (c *Catalog) CommitTransactionInTx(ctx context.Context, commits []table.Tab
 				return err
 			}
 
-			staged, err := internal.UpdateAndStageTable(ctx, current, commit.Identifier, commit.Requirements, commit.Updates, &txCatalog{Catalog: c, tx: tx})
+			staged, err := internal.UpdateAndStageTable(ctx, c.props, current, commit.Identifier, commit.Requirements, commit.Updates, &txCatalog{Catalog: c, tx: tx})
 			if err != nil {
 				return err
 			}
@@ -336,7 +339,9 @@ func (c *Catalog) CommitTransactionInTx(ctx context.Context, commits []table.Tab
 			}
 
 			// Write the metadata file.
-			if err := internal.WriteMetadata(ctx, staged.Metadata(), staged.MetadataLocation(), staged.Properties()); err != nil {
+			ioProps := maps.Clone(c.props)
+			maps.Copy(ioProps, staged.Properties())
+			if err := internal.WriteMetadata(ctx, staged.Metadata(), staged.MetadataLocation(), ioProps); err != nil {
 				return err
 			}
 

@@ -352,7 +352,7 @@ func (c *Catalog) CommitTable(ctx context.Context, ident table.Identifier, reqs 
 		return nil, "", err
 	}
 
-	staged, err := internal.UpdateAndStageTable(ctx, current, ident, reqs, updates, c)
+	staged, err := internal.UpdateAndStageTable(ctx, c.props, current, ident, reqs, updates, c)
 	if err != nil {
 		return nil, "", err
 	}
@@ -362,7 +362,9 @@ func (c *Catalog) CommitTable(ctx context.Context, ident table.Identifier, reqs 
 		return current.Metadata(), current.MetadataLocation(), nil
 	}
 
-	if err := internal.WriteMetadata(ctx, staged.Metadata(), staged.MetadataLocation(), staged.Properties()); err != nil {
+	ioProps := maps.Clone(c.props)
+	maps.Copy(ioProps, staged.Properties())
+	if err := internal.WriteMetadata(ctx, staged.Metadata(), staged.MetadataLocation(), ioProps); err != nil {
 		return nil, "", err
 	}
 
@@ -1130,7 +1132,7 @@ func (c *Catalog) CommitTransaction(ctx context.Context, commits []table.TableCo
 			return err
 		}
 
-		staged, err := internal.UpdateAndStageTable(ctx, current, commit.Identifier, commit.Requirements, commit.Updates, c)
+		staged, err := internal.UpdateAndStageTable(ctx, c.props, current, commit.Identifier, commit.Requirements, commit.Updates, c)
 		if err != nil {
 			return err
 		}
@@ -1141,7 +1143,9 @@ func (c *Catalog) CommitTransaction(ctx context.Context, commits []table.TableCo
 		}
 
 		// Write the metadata file before the DB transaction.
-		if err := internal.WriteMetadata(ctx, staged.Metadata(), staged.MetadataLocation(), staged.Properties()); err != nil {
+		ioProps := maps.Clone(c.props)
+		maps.Copy(ioProps, staged.Properties())
+		if err := internal.WriteMetadata(ctx, staged.Metadata(), staged.MetadataLocation(), ioProps); err != nil {
 			return err
 		}
 

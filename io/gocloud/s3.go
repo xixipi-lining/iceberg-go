@@ -108,18 +108,24 @@ func createS3Bucket(ctx context.Context, parsed *url.URL, props map[string]strin
 		err    error
 	)
 	if v := utils.GetAwsConfig(ctx); v != nil {
+		fmt.Println("get aws config")
 		awscfg = v
 	} else {
+		fmt.Println("parse aws config")
 		awscfg, err = ParseAWSConfig(ctx, props)
 		if err != nil {
 			return nil, err
 		}
+
+		fmt.Printf("awscfg: %+v", *awscfg)
 	}
 
 	endpoint, ok := props[io.S3EndpointURL]
 	if !ok {
 		endpoint = os.Getenv("AWS_S3_ENDPOINT")
 	}
+
+	fmt.Println("endpoint: ", endpoint)
 
 	usePathStyle := true
 	if forceVirtual, ok := props[io.S3ForceVirtualAddressing]; ok {
