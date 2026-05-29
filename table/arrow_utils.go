@@ -881,7 +881,7 @@ func (a *arrowProjectionVisitor) castIfNeeded(field iceberg.NestedField, vals ar
 	}
 
 	targetType := retOrPanic(TypeToArrowType(field.Type, a.includeFieldIDs, a.useLargeTypes))
-	if !arrow.TypeEqual(targetType, vals.DataType()) {
+	if !arrow.TypeEqual(targetType, vals.DataType(), arrow.CheckMetadata()) {
 		switch field.Type.(type) {
 		case iceberg.TimestampType:
 			tt, tgtok := targetType.(*arrow.TimestampType)
@@ -961,7 +961,9 @@ func (a *arrowProjectionVisitor) Struct(st iceberg.StructType, structArr arrow.A
 			arr = a.castIfNeeded(field, arr)
 			defer arr.Release()
 			fieldArrs[i] = arr
-			fields[i] = a.constructField(field, arr.DataType())
+			
+			targetType := retOrPanic(TypeToArrowType(field.Type, a.includeFieldIDs, a.useLargeTypes))
+			fields[i] = a.constructField(field, targetType)
 		} else {
 			dt := retOrPanic(TypeToArrowType(field.Type, false, a.useLargeTypes))
 			alloc := compute.GetAllocator(a.ctx)
@@ -980,7 +982,9 @@ func (a *arrowProjectionVisitor) Struct(st iceberg.StructType, structArr arrow.A
 
 			defer arr.Release()
 			fieldArrs[i] = arr
-			fields[i] = a.constructField(field, arr.DataType())
+			
+			targetType := retOrPanic(TypeToArrowType(field.Type, a.includeFieldIDs, a.useLargeTypes))
+			fields[i] = a.constructField(field, targetType)
 		}
 	}
 
@@ -1020,7 +1024,8 @@ func (a *arrowProjectionVisitor) List(listType iceberg.ListType, listArr arrow.A
 	defer valArr.Release()
 
 	var outType arrow.ListLikeType
-	elemField := a.constructField(listType.ElementField(), valArr.DataType())
+	targetType := retOrPanic(TypeToArrowType(listType.ElementField().Type, a.includeFieldIDs, a.useLargeTypes))
+	elemField := a.constructField(listType.ElementField(), targetType)
 	switch arr.DataType().ID() {
 	case arrow.LIST:
 		outType = arrow.ListOfField(elemField)
@@ -1052,8 +1057,10 @@ func (a *arrowProjectionVisitor) Map(m iceberg.MapType, mapArray, keyResult, val
 	vals := a.castIfNeeded(m.ValueField(), valResult)
 	defer vals.Release()
 
-	keyField := a.constructField(m.KeyField(), keys.DataType())
-	valField := a.constructField(m.ValueField(), vals.DataType())
+	keyTargetType := retOrPanic(TypeToArrowType(m.KeyField().Type, a.includeFieldIDs, a.useLargeTypes))
+	valTargetType := retOrPanic(TypeToArrowType(m.ValueField().Type, a.includeFieldIDs, a.useLargeTypes))
+	keyField := a.constructField(m.KeyField(), keyTargetType)
+	valField := a.constructField(m.ValueField(), valTargetType)
 
 	mapType := arrow.MapOfWithMetadata(keyField.Type, keyField.Metadata, valField.Type, valField.Metadata)
 	childData := array.NewData(mapType.Elem(), arr.Data().Children()[0].Len(), []*memory.Buffer{nil},
