@@ -22,6 +22,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"iter"
 	"log"
@@ -37,6 +38,7 @@ import (
 	"github.com/apache/iceberg-go/internal"
 	icebergio "github.com/apache/iceberg-go/io"
 	tblutils "github.com/apache/iceberg-go/table/internal"
+	"github.com/klauspost/compress/zstd"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -50,15 +52,19 @@ import (
 // catalogs return their conflict errors raw and will not trigger
 // retries until follow-up work wires them through (tracked under
 // issue #830).
-//
-// The retry loop in doCommit re-issues the original updates and
-// requirements unchanged. This recovers only from transient catalog
-// errors (dropped connections, brief 409 during leader election); it
-// does not yet refresh the table metadata between attempts, so a
-// contended commit whose AssertRefSnapshotID requirement has been
-// invalidated by a peer will fail deterministically on every retry.
-// Refresh-and-replay is tracked separately (issue #830).
 var ErrCommitFailed = errors.New("commit failed, refresh and try again")
+
+// ErrWriteIORequired is returned by doCommit when the table's file system
+// does not implement io.WriteFileIO. Manifest-list rebuild on retry requires
+// write access; failing fast here is preferable to silently skipping the
+// rebuild and reintroducing the stale-parent data-loss bug. Callers that
+// need to detect this condition should use errors.Is(err, ErrWriteIORequired).
+var ErrWriteIORequired = errors.New("commit: file system does not implement WriteFileIO")
+
+// ErrSnapshotNotFound is returned (wrapped) by metadata lookups and by
+// computeOwnManifests when a snapshot ID does not exist in the table's
+// snapshot list. Tests pin meaning via errors.Is(err, ErrSnapshotNotFound).
+var ErrSnapshotNotFound = errors.New("snapshot not found")
 
 type FSysF func(ctx context.Context) (icebergio.IO, error)
 
@@ -325,7 +331,52 @@ func (t Table) AllManifests(ctx context.Context) iter.Seq2[iceberg.ManifestFile,
 	}
 }
 
-func (t Table) doCommit(ctx context.Context, updates []Update, reqs []Requirement) (*Table, error) {
+// conflictValidatorFunc runs a single producer's client-side conflict
+// check against a pre-built conflictContext. Validators return a wrapped
+// ErrCommit* sentinel on retryable conflict, ErrCommitDiverged on
+// terminal divergence, or nil on success.
+type conflictValidatorFunc func(cc *conflictContext) error
+
+// commitOpts controls optional behavior of doCommit beyond the core
+// updates/requirements loop. All fields are zero-valued by default and
+// callers opt in via the commitOption functional options passed to
+// doCommit.
+type commitOpts struct {
+	// branch is the ref the commit targets. When empty, pre-flight
+	// conflict validation is skipped because no conflictContext can
+	// be built. Direct doCommit callers (unit tests, low-level utils)
+	// may leave this empty; Transaction.Commit always sets it.
+	branch string
+
+	// validators runs once before cat.CommitTable on the first attempt
+	// only. Refresh-and-replay across retries is deferred to PR 2.5.
+	validators []conflictValidatorFunc
+}
+
+type commitOption func(*commitOpts)
+
+// withCommitBranch sets the target branch for the pre-flight
+// conflict-validation walk. An empty branch is treated as the main
+// branch — Transaction.branch is empty when the caller never picked
+// one explicitly, and the implicit default is main.
+func withCommitBranch(branch string) commitOption {
+	if branch == "" {
+		branch = MainBranch
+	}
+
+	return func(o *commitOpts) { o.branch = branch }
+}
+
+func withCommitValidators(vs ...conflictValidatorFunc) commitOption {
+	return func(o *commitOpts) { o.validators = append(o.validators, vs...) }
+}
+
+func (t Table) doCommit(ctx context.Context, updates []Update, reqs []Requirement, opts ...commitOption) (*Table, error) {
+	var co commitOpts
+	for _, apply := range opts {
+		apply(&co)
+	}
+
 	cfg := readRetryConfig(t.metadata.Properties())
 
 	// Bound total retry time with a derived context so both the wait loop
@@ -333,12 +384,48 @@ func (t Table) doCommit(ctx context.Context, updates []Update, reqs []Requiremen
 	retryCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.totalTimeoutMs)*time.Millisecond)
 	defer cancel()
 
+	fs, err := t.fsF(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Every real commit-path FS implements WriteFileIO. Failing here is
+	// preferable to silently skipping the manifest-list rebuild inside the
+	// retry loop — a skip reintroduces the original stale-parent data loss.
+	wfs, ok := fs.(icebergio.WriteFileIO)
+	if !ok {
+		return nil, fmt.Errorf("%w: manifest list rebuild requires write access", ErrWriteIORequired)
+	}
+
 	var (
-		newMeta Metadata
-		newLoc  string
-		err     error
-		timer   *time.Timer
+		newMeta           Metadata
+		newLoc            string
+		timer             *time.Timer
+		orphanedManifests []string // manifest-list files orphaned by rebuilds
 	)
+
+	// cleanupOrphans controls whether the defer below removes orphaned manifest-list
+	// files on exit. It defaults to true (clean on all safe exits) and is set to
+	// false only for the one unsafe case: a non-ErrCommitFailed error from
+	// CommitTable, where the catalog may have silently accepted the commit and one
+	// of the "orphaned" files may actually be the live snapshot.
+	cleanupOrphans := true
+	defer func() {
+		if !cleanupOrphans || len(orphanedManifests) == 0 {
+			return
+		}
+		for _, path := range orphanedManifests {
+			if removeErr := wfs.Remove(path); removeErr != nil {
+				log.Printf("Warning: failed to delete orphaned manifest list %s: %v", path, removeErr)
+			}
+		}
+	}()
+
+	// current tracks the catalog state between retries. On attempt 0 it
+	// equals t.metadata (so the conflict context's concurrent-snapshot
+	// walk is empty and validators short-circuit). On subsequent
+	// attempts it is the freshly-loaded post-conflict state.
+	current := t.metadata
 
 	// numRetries counts retries; total attempts = 1 initial + numRetries.
 	totalAttempts := cfg.numRetries + 1
@@ -358,6 +445,64 @@ func (t Table) doCommit(ctx context.Context, updates []Update, reqs []Requiremen
 				return nil, context.Cause(retryCtx)
 			case <-timer.C:
 			}
+
+			// Refresh-and-replay: reload the catalog's current state,
+			// run the producers' validators against the fresh
+			// (base=t.metadata, current=fresh) conflict context, and
+			// rewrite any AssertRefSnapshotID requirements to target
+			// the new branch head so re-submission is not rejected
+			// just because a peer advanced the head with a
+			// non-conflicting commit.
+			fresh, refreshErr := t.cat.LoadTable(retryCtx, t.identifier)
+			if refreshErr != nil {
+				return nil, fmt.Errorf("refresh table for retry: %w", refreshErr)
+			}
+			current = fresh.metadata
+			reqs = rewriteRefSnapshotRequirements(reqs, co.branch, current)
+
+			// Rebuild snapshot manifest lists to inherit all files committed
+			// by concurrent writers since the snapshot was originally built.
+			// Without this, the new snapshot's manifest list would only
+			// contain its own files and callers scanning the current snapshot
+			// would miss every concurrent writer's data.
+			rebuiltUpdates, orphaned, rebuildErr := rebuildSnapshotUpdates(retryCtx, updates, current, co.branch, wfs, int(attempt))
+			if rebuildErr != nil {
+				return nil, fmt.Errorf("rebuild manifest list for retry attempt %d: %w", attempt, rebuildErr)
+			}
+			orphanedManifests = append(orphanedManifests, orphaned...)
+			updates = rebuiltUpdates
+		}
+
+		// Pre-flight client-side conflict validation. Producers can
+		// reject commits whose semantics are violated by concurrent
+		// peers (partition-filter overlap, referenced-file removal)
+		// even when the catalog-side AssertRefSnapshotID would accept
+		// them. On attempt 0 base == current → no concurrent
+		// snapshots → validators short-circuit. Real divergence
+		// detection fires on attempts > 0 once `current` is the
+		// post-conflict state.
+		//
+		// Skipped when the branch does not exist on `current` — that
+		// always means "the committer is creating this branch" (e.g.
+		// first commit on a fresh table). There are no concurrent
+		// snapshots on a branch that does not yet exist, and
+		// newConflictContext would otherwise return ErrCommitDiverged.
+		if co.branch != "" && len(co.validators) > 0 && current.SnapshotByName(co.branch) != nil {
+			// caseSensitive is hardcoded to true here: transaction-
+			// level case-sensitivity is not yet threaded through the
+			// Commit path, and true is the scan default throughout the
+			// codebase.
+			cc, ccErr := newConflictContext(t.metadata, current, co.branch, fs, true)
+			if ccErr != nil {
+				// ErrCommitDiverged — terminal, do not retry. The
+				// sentinel deliberately does not wrap ErrCommitFailed.
+				return nil, ccErr
+			}
+			for _, v := range co.validators {
+				if vErr := v(cc); vErr != nil {
+					return nil, vErr
+				}
+			}
 		}
 
 		if retryCtx.Err() != nil {
@@ -372,7 +517,11 @@ func (t Table) doCommit(ctx context.Context, updates []Update, reqs []Requiremen
 		// Only retry on retryable commit conflicts. Unknown-state errors
 		// (5xx, gateway timeouts) must NOT be retried because the commit
 		// may have actually succeeded — retrying could duplicate work.
+		// Suppress orphan cleanup for the same reason: one of the orphaned
+		// manifest-list files may actually be the snapshot the catalog accepted.
 		if !errors.Is(err, ErrCommitFailed) {
+			cleanupOrphans = false
+
 			return nil, err
 		}
 	}
@@ -381,13 +530,107 @@ func (t Table) doCommit(ctx context.Context, updates []Update, reqs []Requiremen
 		return nil, err
 	}
 
-	fs, err := t.fsF(ctx)
-	if err != nil {
-		return nil, err
-	}
 	deleteOldMetadata(fs, t.metadata, newMeta)
 
 	return New(t.identifier, newMeta, newLoc, t.fsF, t.cat), nil
+}
+
+// rewriteRefSnapshotRequirements returns a copy of reqs with every
+// AssertRefSnapshotID targeting `branch` rewritten to point at the
+// branch head on `fresh`. Other requirements pass through untouched.
+//
+// Producers register AssertRefSnapshotID at commit-build time with the
+// committer's base snapshot id. After a peer advances the branch head
+// with a non-conflicting commit, that assertion no longer matches the
+// catalog. Without rewriting the retry would burn the budget on the
+// same stale requirement; with it, validators get to decide if the
+// commit is still safe to replay against the new head.
+//
+// Java's SnapshotProducer rewrites the same way between retries. If
+// the branch is empty or the new head cannot be resolved (branch
+// deleted underneath us), reqs is returned unchanged — newConflict-
+// Context will surface the divergence on the next pre-flight pass.
+func rewriteRefSnapshotRequirements(reqs []Requirement, branch string, fresh Metadata) []Requirement {
+	if branch == "" || fresh == nil {
+		return reqs
+	}
+	head := fresh.SnapshotByName(branch)
+	if head == nil {
+		return reqs
+	}
+
+	out := make([]Requirement, len(reqs))
+	for i, r := range reqs {
+		if a, ok := r.(*assertRefSnapshotID); ok && a.Ref == branch {
+			newID := head.SnapshotID
+			out[i] = AssertRefSnapshotID(branch, &newID)
+
+			continue
+		}
+		out[i] = r
+	}
+
+	return out
+}
+
+// rebuildSnapshotUpdates returns a new slice of updates where any
+// addSnapshotUpdate that carries a rebuildManifestList closure has its
+// snapshot regenerated to inherit all data files committed to the branch
+// since the original snapshot was built. Updates without a rebuild closure
+// pass through unchanged.
+//
+// It also returns the manifest-list file paths that were superseded by
+// the rebuild (i.e., the paths from the input updates that were replaced).
+// These become orphaned objects in object storage and should be removed
+// by the caller after a successful commit.
+//
+// This is the manifest-layer "refresh-and-replay" step: the data files
+// (already written to object storage) are reused as-is; only the manifest
+// list is rewritten to include the fresh parent's manifests so that the
+// rebuilt snapshot contains every committed file.
+func rebuildSnapshotUpdates(ctx context.Context, updates []Update, freshMeta Metadata, branch string, fs icebergio.WriteFileIO, attempt int) (rebuilt []Update, orphanedPaths []string, err error) {
+	// Determine the fresh branch head to use as the rebuilt snapshot's parent.
+	var freshHead *Snapshot
+	if branch != "" && freshMeta != nil {
+		freshHead = freshMeta.SnapshotByName(branch)
+	} else if freshMeta != nil {
+		freshHead = freshMeta.CurrentSnapshot()
+	}
+
+	result := make([]Update, len(updates))
+	copy(result, updates)
+
+	for i, u := range result {
+		su, ok := u.(*addSnapshotUpdate)
+		if !ok || su.rebuildManifestList == nil {
+			continue
+		}
+
+		// Skip if the parent has not changed — saves an unnecessary S3 write.
+		if freshHead != nil && su.Snapshot.ParentSnapshotID != nil &&
+			*su.Snapshot.ParentSnapshotID == freshHead.SnapshotID {
+			continue
+		}
+
+		oldManifestList := su.Snapshot.ManifestList
+
+		newSnap, rebuildErr := su.rebuildManifestList(ctx, freshMeta, freshHead, fs, attempt)
+		if rebuildErr != nil {
+			return nil, nil, rebuildErr
+		}
+
+		result[i] = &addSnapshotUpdate{
+			baseUpdate:          su.baseUpdate,
+			Snapshot:            newSnap,
+			ownManifests:        su.ownManifests,
+			rebuildManifestList: su.rebuildManifestList,
+		}
+
+		// The old manifest list is now an orphaned object in object storage.
+		orphanedPaths = append(orphanedPaths, oldManifestList)
+	}
+
+	return result, orphanedPaths, nil
 }
 
 type retryConfig struct {
@@ -573,6 +816,17 @@ func WithOptions(opts iceberg.Properties) ScanOption {
 	}
 }
 
+// WithRowLineage projects the row-lineage metadata columns (_row_id and
+// _last_updated_sequence_number) so that row identity and per-row update
+// sequence are preserved through rewrites and compactions. Requires a v3
+// table — calling Scan.Projection on a v1/v2 table after applying this
+// option returns an error.
+func WithRowLineage() ScanOption {
+	return func(scan *Scan) {
+		scan.includeRowLineage = true
+	}
+}
+
 func (t Table) Scan(opts ...ScanOption) *Scan {
 	s := &Scan{
 		metadata:       t.metadata,
@@ -622,13 +876,14 @@ func NewFromLocation(
 			return nil, err
 		}
 
-		if isGzippedMetadataJson(metalocation) {
-			gz, err := gzip.NewReader(bytes.NewReader(data))
+		if codec := metadataCompressionCodec(metalocation); codec != "" {
+			rc, err := newDecompressor(bytes.NewReader(data), codec)
 			if err != nil {
 				return nil, err
 			}
-			defer gz.Close()
-			data, err = io.ReadAll(gz)
+			defer rc.Close()
+
+			data, err = io.ReadAll(rc)
 			if err != nil {
 				return nil, err
 			}
@@ -645,13 +900,14 @@ func NewFromLocation(
 		defer internal.CheckedClose(f, &err)
 
 		var r io.Reader = f
-		if isGzippedMetadataJson(metalocation) {
-			gz, err := gzip.NewReader(f)
+		if codec := metadataCompressionCodec(metalocation); codec != "" {
+			rc, err := newDecompressor(f, codec)
 			if err != nil {
 				return nil, err
 			}
-			defer gz.Close()
-			r = gz
+			defer rc.Close()
+
+			r = rc
 		}
 
 		if meta, err = ParseMetadata(r); err != nil {
@@ -662,6 +918,29 @@ func NewFromLocation(
 	return New(ident, meta, metalocation, fsysF, cat), nil
 }
 
-func isGzippedMetadataJson(location string) bool {
-	return strings.HasSuffix(location, ".gz.metadata.json") || strings.HasSuffix(location, "metadata.json.gz")
+func metadataCompressionCodec(location string) string {
+	switch {
+	case strings.HasSuffix(location, ".gz.metadata.json") || strings.HasSuffix(location, "metadata.json.gz"):
+		return MetadataCompressionCodecGzip
+	case strings.HasSuffix(location, ".zstd.metadata.json") || strings.HasSuffix(location, "metadata.json.zstd"):
+		return MetadataCompressionCodecZstd
+	default:
+		return ""
+	}
+}
+
+func newDecompressor(r io.Reader, codec string) (io.ReadCloser, error) {
+	switch codec {
+	case MetadataCompressionCodecGzip:
+		return gzip.NewReader(r)
+	case MetadataCompressionCodecZstd:
+		dec, err := zstd.NewReader(r)
+		if err != nil {
+			return nil, err
+		}
+
+		return dec.IOReadCloser(), nil
+	default:
+		return nil, fmt.Errorf("unsupported metadata decompression codec: %s", codec)
+	}
 }

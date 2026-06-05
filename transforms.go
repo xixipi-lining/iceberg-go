@@ -30,9 +30,9 @@ import (
 	"unsafe"
 
 	"github.com/apache/arrow-go/v18/arrow/decimal128"
+	"github.com/apache/iceberg-go/internal"
 	"github.com/google/uuid"
 	"github.com/twmb/murmur3"
-	"golang.org/x/exp/constraints"
 )
 
 // ParseTransform takes the string representation of a transform as
@@ -47,7 +47,10 @@ func ParseTransform(s string) (Transform, error) {
 			break
 		}
 
-		n, _ := strconv.Atoi(matches[1])
+		n, err := strconv.Atoi(matches[1])
+		if err != nil || n <= 0 || n > math.MaxInt32 {
+			break
+		}
 
 		return BucketTransform{NumBuckets: n}, nil
 	case strings.HasPrefix(s, "truncate"):
@@ -56,7 +59,10 @@ func ParseTransform(s string) (Transform, error) {
 			break
 		}
 
-		n, _ := strconv.Atoi(matches[1])
+		n, err := strconv.Atoi(matches[1])
+		if err != nil || n <= 0 || n > math.MaxInt32 {
+			break
+		}
 
 		return TruncateTransform{Width: n}, nil
 	default:
@@ -107,6 +113,10 @@ func (t IdentityTransform) MarshalText() ([]byte, error) {
 func (IdentityTransform) String() string { return "identity" }
 
 func (IdentityTransform) CanTransform(t Type) bool {
+	switch t.(type) {
+	case GeometryType, GeographyType:
+		return false
+	}
 	_, ok := t.(PrimitiveType)
 
 	return ok
@@ -562,19 +572,6 @@ type TimeTransform interface {
 	Transformer(Type) (func(any) Optional[int32], error)
 }
 
-// floorDiv performs floored integer division, rounding toward negative infinity.
-// Unlike Go's truncated division (which rounds toward zero), this correctly
-// handles negative dividends — e.g., floorDiv(-1, 3600000000) = -1, not 0.
-// This matches the behavior of Java's Math.floorDiv.
-func floorDiv[T constraints.Integer](a, b T) T {
-	d := a / b
-	if (a^b) < 0 && d*b != a {
-		d--
-	}
-
-	return d
-}
-
 func canTransformTime(t TimeTransform, sourceType Type) bool {
 	switch sourceType.(type) {
 	case DateType, TimestampType, TimestampTzType, TimestampNsType, TimestampTzNsType:
@@ -909,7 +906,7 @@ func (HourTransform) Transformer(src Type) (func(any) Optional[int32], error) {
 
 			return Optional[int32]{
 				Valid: true,
-				Val:   int32(floorDiv(int64(v.(Timestamp)), factor)),
+				Val:   int32(internal.FloorDiv(int64(v.(Timestamp)), factor)),
 			}
 		}, nil
 	case TimestampNsType, TimestampTzNsType:
@@ -922,7 +919,7 @@ func (HourTransform) Transformer(src Type) (func(any) Optional[int32], error) {
 
 			return Optional[int32]{
 				Valid: true,
-				Val:   int32(floorDiv(int64(v.(TimestampNano)), factor)),
+				Val:   int32(internal.FloorDiv(int64(v.(TimestampNano)), factor)),
 			}
 		}, nil
 	}
@@ -939,10 +936,10 @@ func (HourTransform) Apply(value Optional[Literal]) (out Optional[Literal]) {
 	switch v := value.Val.(type) {
 	case TimestampLiteral:
 		const factor = int64(time.Hour / time.Microsecond)
-		out.Valid, out.Val = true, Int32Literal(int32(floorDiv(int64(v), factor)))
+		out.Valid, out.Val = true, Int32Literal(int32(internal.FloorDiv(int64(v), factor)))
 	case TimestampNsLiteral:
 		const factor = int64(time.Hour)
-		out.Valid, out.Val = true, Int32Literal(int32(floorDiv(int64(v), factor)))
+		out.Valid, out.Val = true, Int32Literal(int32(internal.FloorDiv(int64(v), factor)))
 	}
 
 	return out

@@ -39,6 +39,16 @@ type Output interface {
 	DescribeTable(*table.Table)
 	Files(tbl *table.Table, history bool)
 	DescribeProperties(iceberg.Properties)
+	Info(tbl *table.Table)
+	Snapshots(tbl *table.Table)
+	Refs(tbl *table.Table, filterType string)
+	PartitionStats(tbl *table.Table, snapshotID *int64, all bool)
+	SchemaWithDefaults(schema *iceberg.Schema)
+	ExpireSnapshotsResult(result ExpireSnapshotsResult)
+	CleanOrphanFilesResult(result CleanOrphanFilesResult)
+	UpgradeResult(result UpgradeResult)
+	RollbackResult(result RollbackResult)
+	RefCreated(result RefCreatedResult)
 	Text(string)
 	Schema(*iceberg.Schema)
 	Spec(iceberg.PartitionSpec)
@@ -150,15 +160,20 @@ func (t textOutput) Files(tbl *table.Table, history bool) {
 			snapshotTree = append(snapshotTree, pterm.LeveledListItem{
 				Level: 1, Text: "Manifest: " + m.FilePath(),
 			})
-			datafiles, err := m.FetchEntries(afs, false)
-			if err != nil {
-				t.Error(err)
-				os.Exit(1)
-			}
-			for _, e := range datafiles {
+			var iterErr error
+			for e, err := range m.Entries(afs, false) {
+				if err != nil {
+					iterErr = err
+
+					break
+				}
 				snapshotTree = append(snapshotTree, pterm.LeveledListItem{
 					Level: 2, Text: "Datafile: " + e.DataFile().FilePath(),
 				})
+			}
+			if iterErr != nil {
+				t.Error(iterErr)
+				os.Exit(1)
 			}
 		}
 	}

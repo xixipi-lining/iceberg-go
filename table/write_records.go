@@ -19,6 +19,7 @@ package table
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"iter"
 	"strconv"
@@ -34,8 +35,12 @@ import (
 type WriteRecordOption func(*writeRecordConfig)
 
 type writeRecordConfig struct {
-	targetFileSize int64
-	writeUUID      *uuid.UUID
+	targetFileSize     int64
+	writeUUID          *uuid.UUID
+	maxWriteWorkers    int
+	clustered          bool
+	fileSchema         *iceberg.Schema
+	preserveRowLineage bool
 }
 
 // WithTargetFileSize overrides the table's default target file size.
@@ -52,6 +57,63 @@ func WithWriteUUID(id uuid.UUID) WriteRecordOption {
 	}
 }
 
+// WithMaxWriteWorkers overrides the default number of fanout workers
+// used for partitioned writes. Each worker processes record batches,
+// partitions them, and writes to the appropriate partition files.
+// Fewer workers means fewer concurrent parquet writers compressing
+// pages simultaneously, which reduces peak memory. A value of 0
+// (the default) uses [config.EnvConfig.MaxWorkers].
+//
+// Combining this option with [WithClusteredWrite] is rejected by
+// [WriteRecords]: the clustered write path is single-threaded by
+// design, so the two options have no meaningful interaction.
+func WithMaxWriteWorkers(n int) WriteRecordOption {
+	return func(c *writeRecordConfig) {
+		c.maxWriteWorkers = n
+	}
+}
+
+// WithClusteredWrite enables the memory-efficient clustered write
+// path for partitioned tables. It keeps at most one partition writer
+// open at a time: when a record arrives for a new partition, the
+// current writer is flushed and closed before a new one is opened.
+//
+// The input must be clustered by partition across batches: once a
+// partition's writer has been closed, encountering further records
+// for that partition returns an error. Within a single batch the
+// writer reclusters rows by partition, so interleaved values like
+// [a,b,a,b] are accepted; the strict check fires only across batch
+// boundaries. This is the natural order for compaction, where each
+// source data file typically belongs to a single partition. If the
+// input is not clustered across batches, use the fanout writer (the
+// default) instead.
+//
+// Combining this option with [WithMaxWriteWorkers] is rejected by
+// [WriteRecords]: the clustered path is single-threaded by design.
+func WithClusteredWrite() WriteRecordOption {
+	return func(c *writeRecordConfig) {
+		c.clustered = true
+	}
+}
+
+// WithPreserveRowLineage sets the output file schema to include the v3 row-
+// lineage metadata columns (_row_id, _last_updated_sequence_number) so that
+// row identity is preserved through rewrites and compactions. The input
+// records must already carry _row_id (e.g. from a scan that projected the
+// lineage columns).
+//
+// [WriteRecords] validates this option against the table state and the input
+// Arrow schema: it errors when applied to a v1/v2 table or when the input
+// records don't include the _row_id column. The schema parameter is the
+// projected Iceberg schema (typically [iceberg.SchemaWithRowLineage]) and is
+// used to write the output Parquet's field IDs.
+func WithPreserveRowLineage(schema *iceberg.Schema) WriteRecordOption {
+	return func(c *writeRecordConfig) {
+		c.fileSchema = schema
+		c.preserveRowLineage = true
+	}
+}
+
 // WriteRecords writes Arrow record batches to Parquet data files for the given
 // table, returning an iterator of the resulting DataFile objects.
 //
@@ -60,7 +122,8 @@ func WithWriteUUID(id uuid.UUID) WriteRecordOption {
 // field ID (or by name via the table's name mapping if field IDs are absent).
 // The Arrow schema may be a subset of the table schema (projection), but every
 // field present must have a type that is promotable to the corresponding table
-// field type.
+// field type. When the table uses microsecond timestamps, Arrow nanosecond
+// timestamps are also accepted and are downcast during the write path.
 //
 // WriteRecords releases each RecordBatch it consumes. If the caller needs a
 // batch to remain valid after it has been yielded, it must call Retain before
@@ -70,14 +133,44 @@ func WriteRecords(ctx context.Context, tbl *Table,
 	records iter.Seq2[arrow.RecordBatch, error],
 	opts ...WriteRecordOption,
 ) iter.Seq2[iceberg.DataFile, error] {
-	if err := checkArrowSchemaCompat(tbl.Schema(), schema, false); err != nil {
-		return internal.SingleErrorIter[iceberg.DataFile](
-			fmt.Errorf("arrow schema is not compatible with the table schema: %w", err))
-	}
-
 	cfg := writeRecordConfig{}
 	for _, opt := range opts {
 		opt(&cfg)
+	}
+
+	if cfg.clustered && cfg.maxWriteWorkers > 0 {
+		return internal.SingleErrorIter[iceberg.DataFile](
+			errors.New("WithClusteredWrite and WithMaxWriteWorkers are incompatible: the clustered write path is single-threaded"))
+	}
+
+	if cfg.preserveRowLineage {
+		if v := tbl.metadata.Version(); v < 3 {
+			return internal.SingleErrorIter[iceberg.DataFile](
+				fmt.Errorf("WithPreserveRowLineage requires a v3+ table, got v%d", v))
+		}
+		if len(schema.FieldIndices(iceberg.RowIDColumnName)) == 0 {
+			return internal.SingleErrorIter[iceberg.DataFile](
+				fmt.Errorf("WithPreserveRowLineage requires input records to include the %q column", iceberg.RowIDColumnName))
+		}
+	}
+
+	// Validate the input arrow schema against the projected schema. When
+	// row lineage is being preserved, the projected schema includes the
+	// reserved metadata columns; using tbl.Schema() instead would reject
+	// the lineage columns since they're not declared in the user schema.
+	checkSchema := tbl.Schema()
+	if cfg.fileSchema != nil {
+		checkSchema = cfg.fileSchema
+	}
+	err := checkArrowSchemaCompat(checkSchema, schema, false)
+	if err != nil {
+		if downcastErr := checkArrowSchemaCompat(checkSchema, schema, true); downcastErr == nil {
+			err = nil
+		}
+	}
+	if err != nil {
+		return internal.SingleErrorIter[iceberg.DataFile](
+			fmt.Errorf("arrow schema is not compatible with the table schema: %w", err))
 	}
 
 	fs, err := tbl.fsF(ctx)
@@ -119,10 +212,16 @@ func WriteRecords(ctx context.Context, tbl *Table,
 	}
 
 	args := recordWritingArgs{
-		sc:        schema,
-		itr:       releasing,
-		fs:        writeFS,
-		writeUUID: cfg.writeUUID,
+		sc:              schema,
+		itr:             releasing,
+		fs:              writeFS,
+		writeUUID:       cfg.writeUUID,
+		maxWriteWorkers: cfg.maxWriteWorkers,
+		clustered:       cfg.clustered,
+	}
+
+	if cfg.fileSchema != nil {
+		args.factoryOpts = append(args.factoryOpts, withFactoryFileSchema(cfg.fileSchema))
 	}
 
 	return recordsToDataFiles(ctx, tbl.Location(), meta, args)

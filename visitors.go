@@ -201,9 +201,13 @@ type exprEvaluator struct {
 }
 
 func (e *exprEvaluator) Eval(st StructLike) (bool, error) {
-	e.st = st
+	// Use a per-call evaluator so concurrent callers (e.g. parallel
+	// manifest scans in table.Scan.collectManifestEntries) do not race
+	// on the shared `st` field. Mirrors the fix in inclusiveMetricsEval
+	// from #445.
+	ev := exprEvaluator{bound: e.bound, st: st}
 
-	return VisitExpr(e.bound, e)
+	return VisitExpr(ev.bound, &ev)
 }
 
 func (e *exprEvaluator) VisitUnbound(UnboundPredicate) bool {
@@ -316,7 +320,7 @@ func doCmp(st StructLike, term BoundTerm, lit Literal) int {
 		return typedCmp[Time](st, term, lit)
 	case TimestampType, TimestampTzType:
 		return typedCmp[Timestamp](st, term, lit)
-	case BinaryType, FixedType:
+	case BinaryType, FixedType, GeographyType, GeometryType:
 		return typedCmp[[]byte](st, term, lit)
 	case StringType:
 		return typedCmp[string](st, term, lit)
@@ -324,6 +328,8 @@ func doCmp(st StructLike, term BoundTerm, lit Literal) int {
 		return typedCmp[uuid.UUID](st, term, lit)
 	case DecimalType:
 		return typedCmp[Decimal](st, term, lit)
+	case VariantType:
+		panic("variant values are not comparable")
 	}
 	panic(ErrType)
 }

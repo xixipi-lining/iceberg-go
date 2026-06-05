@@ -20,6 +20,7 @@ package table
 import (
 	"context"
 	"fmt"
+	"math"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/apache/arrow-go/v18/arrow"
 	"github.com/apache/arrow-go/v18/arrow/array"
+	"github.com/apache/arrow-go/v18/arrow/compute"
 	arrowdecimal "github.com/apache/arrow-go/v18/arrow/decimal"
 	"github.com/apache/arrow-go/v18/arrow/extensions"
 	"github.com/apache/arrow-go/v18/arrow/memory"
@@ -42,13 +44,17 @@ import (
 type FanoutWriterTestSuite struct {
 	suite.Suite
 
-	mem memory.Allocator
+	mem *memory.CheckedAllocator
 	ctx context.Context
 }
 
 func (s *FanoutWriterTestSuite) SetupTest() {
-	s.ctx = context.Background()
 	s.mem = memory.NewCheckedAllocator(memory.NewGoAllocator())
+	s.ctx = compute.WithAllocator(context.Background(), s.mem)
+}
+
+func (s *FanoutWriterTestSuite) TearDownTest() {
+	s.mem.AssertSize(s.T(), 0)
 }
 
 func TestFanoutWriter(t *testing.T) {
@@ -114,6 +120,7 @@ func (s *FanoutWriterTestSuite) testTransformPartition(transform iceberg.Transfo
 		itr: func(yield func(arrow.RecordBatch, error) bool) {
 			testRecord.Retain()
 			yield(testRecord, nil)
+			testRecord.Release()
 		},
 		fs: iceio.LocalFS{},
 		writeUUID: func() *uuid.UUID {
@@ -294,6 +301,188 @@ func (s *FanoutWriterTestSuite) TestHourTransform() {
 	s.testTransformPartition(iceberg.HourTransform{}, "created_ts", "hour", testRecord, 3)
 }
 
+func (s *FanoutWriterTestSuite) TestTimestampPartitionUsesArrowUnit() {
+	tests := []struct {
+		name           string
+		arrowType      *arrow.TimestampType
+		value          arrow.Timestamp
+		expectedSource iceberg.Type
+	}{
+		{
+			name:           "second",
+			arrowType:      &arrow.TimestampType{Unit: arrow.Second},
+			value:          arrow.Timestamp(1_700_000_000),
+			expectedSource: iceberg.PrimitiveTypes.Timestamp,
+		},
+		{
+			name:           "millisecond",
+			arrowType:      &arrow.TimestampType{Unit: arrow.Millisecond},
+			value:          arrow.Timestamp(1_700_000_000_000),
+			expectedSource: iceberg.PrimitiveTypes.Timestamp,
+		},
+		{
+			name:           "microsecond",
+			arrowType:      &arrow.TimestampType{Unit: arrow.Microsecond},
+			value:          arrow.Timestamp(1_700_000_000_000_000),
+			expectedSource: iceberg.PrimitiveTypes.Timestamp,
+		},
+		{
+			name:           "millisecond UTC",
+			arrowType:      &arrow.TimestampType{Unit: arrow.Millisecond, TimeZone: "UTC"},
+			value:          arrow.Timestamp(1_700_000_000_000),
+			expectedSource: iceberg.PrimitiveTypes.TimestampTz,
+		},
+	}
+
+	for _, tt := range tests {
+		s.Run(tt.name, func() {
+			arrSchema := arrow.NewSchema([]arrow.Field{
+				{Name: "id", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+				{Name: "created_ts", Type: tt.arrowType, Nullable: true},
+			}, nil)
+
+			testRecord := s.createCustomTestRecord(arrSchema, [][]any{
+				{int32(1), tt.value},
+			})
+			defer testRecord.Release()
+
+			icebergSchema, err := ArrowSchemaToIcebergWithFreshIDs(testRecord.Schema(), false)
+			s.Require().NoError(err)
+
+			sourceField, ok := icebergSchema.FindFieldByName("created_ts")
+			s.Require().True(ok)
+			s.True(tt.expectedSource.Equals(sourceField.Type))
+
+			spec := iceberg.NewPartitionSpec(iceberg.PartitionField{
+				SourceIDs: []int{sourceField.ID},
+				FieldID:   1000,
+				Transform: iceberg.DayTransform{},
+				Name:      "created_day",
+			})
+
+			partitions, err := getRecordPartitions(spec, icebergSchema, testRecord)
+			s.Require().NoError(err)
+			s.Require().Len(partitions, 1)
+
+			partitionPath := spec.PartitionToPath(partitions[0].partitionRec, icebergSchema)
+			s.Equal("created_day=2023-11-14", partitionPath)
+		})
+	}
+}
+
+func (s *FanoutWriterTestSuite) TestTimestampNsPartitionUsesArrowUnit() {
+	tests := []struct {
+		name           string
+		arrowType      *arrow.TimestampType
+		expectedSource iceberg.Type
+	}{
+		{
+			name:           "nanosecond",
+			arrowType:      &arrow.TimestampType{Unit: arrow.Nanosecond},
+			expectedSource: iceberg.PrimitiveTypes.TimestampNs,
+		},
+		{
+			name:           "nanosecond UTC",
+			arrowType:      &arrow.TimestampType{Unit: arrow.Nanosecond, TimeZone: "UTC"},
+			expectedSource: iceberg.PrimitiveTypes.TimestampTzNs,
+		},
+	}
+
+	for _, tt := range tests {
+		s.Run(tt.name, func() {
+			arrSchema := arrow.NewSchema([]arrow.Field{
+				{Name: "id", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+				{Name: "created_ts", Type: tt.arrowType, Nullable: true},
+			}, nil)
+
+			testRecord := s.createCustomTestRecord(arrSchema, [][]any{
+				{int32(1), arrow.Timestamp(1_700_000_000_000_000_000)},
+			})
+			defer testRecord.Release()
+
+			icebergSchema, err := ArrowSchemaToIcebergWithFreshIDs(testRecord.Schema(), false)
+			s.Require().NoError(err)
+
+			sourceField, ok := icebergSchema.FindFieldByName("created_ts")
+			s.Require().True(ok)
+			s.True(tt.expectedSource.Equals(sourceField.Type))
+
+			spec := iceberg.NewPartitionSpec(iceberg.PartitionField{
+				SourceIDs: []int{sourceField.ID},
+				FieldID:   1000,
+				Transform: iceberg.DayTransform{},
+				Name:      "created_day",
+			})
+
+			partitions, err := getRecordPartitions(spec, icebergSchema, testRecord)
+			s.Require().NoError(err)
+			s.Require().Len(partitions, 1)
+
+			partitionPath := spec.PartitionToPath(partitions[0].partitionRec, icebergSchema)
+			s.Equal("created_day=2023-11-14", partitionPath)
+		})
+	}
+}
+
+func (s *FanoutWriterTestSuite) TestTimestampPartitionFloorsNegativeNanoseconds() {
+	arrSchema := arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		{Name: "created_ts", Type: &arrow.TimestampType{Unit: arrow.Nanosecond}, Nullable: true},
+	}, nil)
+
+	testRecord := s.createCustomTestRecord(arrSchema, [][]any{
+		{int32(1), arrow.Timestamp(-1_500)},
+	})
+	defer testRecord.Release()
+
+	icebergSchema := iceberg.NewSchema(0,
+		iceberg.NestedField{ID: 1, Name: "id", Type: iceberg.PrimitiveTypes.Int32},
+		iceberg.NestedField{ID: 2, Name: "created_ts", Type: iceberg.PrimitiveTypes.Timestamp},
+	)
+
+	spec := iceberg.NewPartitionSpec(iceberg.PartitionField{
+		SourceIDs: []int{2},
+		FieldID:   1000,
+		Transform: iceberg.IdentityTransform{},
+		Name:      "created_ts",
+	})
+
+	partitions, err := getRecordPartitions(spec, icebergSchema, testRecord)
+	s.Require().NoError(err)
+	s.Require().Len(partitions, 1)
+	s.Equal(iceberg.Timestamp(-2), partitions[0].partitionRec.Get(0))
+
+	partitionPath := spec.PartitionToPath(partitions[0].partitionRec, icebergSchema)
+	s.Equal("created_ts=1969-12-31T23%3A59%3A59.999998", partitionPath)
+}
+
+func (s *FanoutWriterTestSuite) TestTimestampPartitionRejectsOverflowWhenScalingArrowUnit() {
+	arrSchema := arrow.NewSchema([]arrow.Field{
+		{Name: "id", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
+		{Name: "created_ts", Type: &arrow.TimestampType{Unit: arrow.Second}, Nullable: true},
+	}, nil)
+
+	testRecord := s.createCustomTestRecord(arrSchema, [][]any{
+		{int32(1), arrow.Timestamp(math.MaxInt64)},
+	})
+	defer testRecord.Release()
+
+	icebergSchema := iceberg.NewSchema(0,
+		iceberg.NestedField{ID: 1, Name: "id", Type: iceberg.PrimitiveTypes.Int32},
+		iceberg.NestedField{ID: 2, Name: "created_ts", Type: iceberg.PrimitiveTypes.Timestamp},
+	)
+
+	spec := iceberg.NewPartitionSpec(iceberg.PartitionField{
+		SourceIDs: []int{2},
+		FieldID:   1000,
+		Transform: iceberg.DayTransform{},
+		Name:      "created_day",
+	})
+
+	_, err := getRecordPartitions(spec, icebergSchema, testRecord)
+	s.Require().ErrorContains(err, "overflows int64")
+}
+
 func (s *FanoutWriterTestSuite) TestVoidTransform() {
 	arrSchema := arrow.NewSchema([]arrow.Field{
 		{Name: "id", Type: arrow.PrimitiveTypes.Int32, Nullable: true},
@@ -376,47 +565,26 @@ func (s *FanoutWriterTestSuite) createComprehensiveTestRecord() arrow.RecordBatc
 	}
 	arrSchema := arrow.NewSchema(fields, nil)
 
-	idB := array.NewInt64Builder(pool)
-	decB := array.NewDecimal128Builder(pool, &arrow.Decimal128Type{Precision: 10, Scale: 6})
-	timeB := array.NewTime64Builder(pool, &arrow.Time64Type{Unit: arrow.Microsecond})
-	tsB := array.NewTimestampBuilder(pool, &arrow.TimestampType{Unit: arrow.Microsecond})
-	tstzB := array.NewTimestampBuilder(pool, &arrow.TimestampType{Unit: arrow.Microsecond, TimeZone: "UTC"})
-	uuidB := extensions.NewUUIDBuilder(pool)
-	dateB := array.NewDate32Builder(pool)
+	bldr := array.NewRecordBuilder(pool, arrSchema)
+	defer bldr.Release()
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
+		bldr.Field(0).(*array.Int64Builder).Append(int64(i))
 		if i%2 == 0 {
-			idB.Append(int64(i))
 			val := fmt.Sprintf("%d.%06d", 123, i)
 			arrowDec, _ := arrowdecimal.Decimal128FromString(val, 10, 6)
-			decB.Append(arrowDec)
-			timeB.Append(arrow.Time64(time.Duration(i * 1_000_000)))
-			tsB.Append(arrow.Timestamp(1_600_000_000_000_000 + int64(i)*1_000_000))
-			tstzB.Append(arrow.Timestamp(1_600_000_000_000_000 + int64(i)*1_000_000))
-			uuidB.Append(uuid.New())
-			dateB.Append(arrow.Date32(20000 + i))
+			bldr.Field(1).(*array.Decimal128Builder).Append(arrowDec)
+			bldr.Field(2).(*array.Time64Builder).Append(arrow.Time64(time.Duration(i * 1_000_000)))
+			bldr.Field(3).(*array.TimestampBuilder).Append(arrow.Timestamp(1_600_000_000_000_000 + int64(i)*1_000_000))
+			bldr.Field(4).(*array.TimestampBuilder).Append(arrow.Timestamp(1_600_000_000_000_000 + int64(i)*1_000_000))
+			bldr.Field(5).(*extensions.UUIDBuilder).Append(uuid.New())
+			bldr.Field(6).(*array.Date32Builder).Append(arrow.Date32(20000 + i))
 		} else {
-			idB.Append(int64(i))
-			decB.AppendNull()
-			timeB.AppendNull()
-			tsB.AppendNull()
-			tstzB.AppendNull()
-			uuidB.AppendNull()
-			dateB.AppendNull()
+			for j := 1; j <= 6; j++ {
+				bldr.Field(j).AppendNull()
+			}
 		}
 	}
 
-	cols := []arrow.Array{
-		idB.NewArray(),
-		decB.NewArray(),
-		timeB.NewArray(),
-		tsB.NewArray(),
-		tstzB.NewArray(),
-		uuidB.NewArray(),
-		dateB.NewArray(),
-	}
-
-	record := array.NewRecordBatch(arrSchema, cols, int64(cols[0].Len()))
-
-	return record
+	return bldr.NewRecordBatch()
 }

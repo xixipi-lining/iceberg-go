@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"log"
 	"maps"
 	"strings"
 	_ "unsafe"
@@ -48,6 +49,8 @@ func init() {
 		return NewCatalog(props)
 	}))
 }
+
+var _ catalog.PurgeableTable = (*Catalog)(nil)
 
 type Catalog struct {
 	client HiveClient
@@ -391,6 +394,26 @@ func (c *Catalog) DropTable(ctx context.Context, identifier table.Identifier) er
 	return nil
 }
 
+func (c *Catalog) PurgeTable(ctx context.Context, identifier table.Identifier) error {
+	tbl, err := c.LoadTable(ctx, identifier)
+	if err != nil {
+		return err
+	}
+
+	// Drop the table entry from the catalog first
+	err = c.DropTable(ctx, identifier)
+	if err != nil {
+		return err
+	}
+
+	// Physically delete all table files on storage best-effort
+	if purgeErr := tbl.PurgeFiles(ctx); purgeErr != nil {
+		log.Printf("WARNING: dropped table %s but failed to purge files: %v", identifier, purgeErr)
+	}
+
+	return nil
+}
+
 func (c *Catalog) RenameTable(ctx context.Context, from, to table.Identifier) (*table.Table, error) {
 	fromDB, fromTable, err := identifierToTableName(from)
 	if err != nil {
@@ -433,7 +456,11 @@ func (c *Catalog) CommitTable(ctx context.Context, identifier table.Identifier, 
 
 	lock, err := acquireLock(ctx, c.client, database, tableName, c.opts)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to acquire lock for %s.%s: %w", database, tableName, err)
+		// Lock contention is Hive's primary concurrent-writer signal.
+		// Wrap with table.ErrCommitFailed so the retry loop in
+		// Table.doCommit treats it as a retryable conflict.
+		return nil, "", fmt.Errorf("%w: failed to acquire lock for %s.%s: %w",
+			table.ErrCommitFailed, database, tableName, err)
 	}
 	defer func() {
 		_ = lock.Release(ctx)

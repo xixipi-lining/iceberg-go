@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"iter"
+	"log"
 	"maps"
 	"strconv"
 	"strings"
@@ -137,6 +138,8 @@ type glueAPI interface {
 	UpdateDatabase(ctx context.Context, params *glue.UpdateDatabaseInput, optFns ...func(*glue.Options)) (*glue.UpdateDatabaseOutput, error)
 }
 
+var _ catalog.PurgeableTable = (*Catalog)(nil)
+
 type Catalog struct {
 	glueSvc   glueAPI
 	catalogId *string
@@ -145,6 +148,17 @@ type Catalog struct {
 }
 
 // NewCatalog creates a new instance of glue.Catalog with the given options.
+// To override the AWS config below is an example:
+//
+// import awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
+//
+// client := awshttp.NewBuildableClient().WithTransportOptions(func(t *http.Transport) {
+//     t.IdleConnTimeout     = 90 * time.Second
+//     ...other transport options...
+// })
+// awsCfg.HTTPClient = client
+// catalog := glue.NewCatalog(glue.WithAwsConfig(awsCfg))
+
 func NewCatalog(opts ...Option) *Catalog {
 	glueOps := &options{}
 
@@ -346,6 +360,14 @@ func (c *Catalog) CommitTable(ctx context.Context, identifier table.Identifier, 
 			SkipArchive: aws.Bool(c.props.GetBool(SkipArchive, SkipArchiveDefault)),
 		})
 		if err != nil {
+			// Glue's optimistic locking surfaces a VersionId mismatch
+			// as ConcurrentModificationException. Wrap with
+			// table.ErrCommitFailed so the retry loop in
+			// Table.doCommit treats it as a retryable conflict.
+			if isConcurrentModificationException(err) {
+				return nil, "", fmt.Errorf("%w: %w", table.ErrCommitFailed, err)
+			}
+
 			return nil, "", err
 		}
 	} else {
@@ -383,6 +405,26 @@ func (c *Catalog) DropTable(ctx context.Context, identifier table.Identifier) er
 	_, err = c.glueSvc.DeleteTable(ctx, params)
 	if err != nil {
 		return fmt.Errorf("failed to drop table %s.%s: %w", database, tableName, err)
+	}
+
+	return nil
+}
+
+func (c *Catalog) PurgeTable(ctx context.Context, identifier table.Identifier) error {
+	tbl, err := c.LoadTable(ctx, identifier)
+	if err != nil {
+		return err
+	}
+
+	// Drop the table entry from the catalog first
+	err = c.DropTable(ctx, identifier)
+	if err != nil {
+		return err
+	}
+
+	// Physically delete all table files on storage best-effort
+	if purgeErr := tbl.PurgeFiles(ctx); purgeErr != nil {
+		log.Printf("WARNING: dropped table %s but failed to purge files: %v", identifier, purgeErr)
 	}
 
 	return nil
@@ -801,4 +843,14 @@ func constructDatabaseInput(database string, props iceberg.Properties) *types.Da
 	databaseInput.Parameters = parameters
 
 	return databaseInput
+}
+
+// isConcurrentModificationException reports whether err is or wraps
+// Glue's optimistic-locking conflict signal. The SDK type has no
+// Is(error) bool, so errors.Is would do interface-value equality
+// against a fresh empty struct and never match — errors.As with a
+// throwaway target is the idiomatic type-only check, and we cannot
+// add an Is method to a type from another package.
+func isConcurrentModificationException(err error) bool {
+	return errors.As(err, new(*types.ConcurrentModificationException))
 }

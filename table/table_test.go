@@ -50,6 +50,7 @@ import (
 	iceio "github.com/apache/iceberg-go/io"
 	"github.com/apache/iceberg-go/table"
 	"github.com/google/uuid"
+	"github.com/klauspost/compress/zstd"
 	"github.com/pterm/pterm"
 	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
@@ -162,6 +163,126 @@ func (t *TableTestSuite) TestNewTableFromReadFileGzipped() {
 		"s3://bucket/test/location/uuid.gz.metadata.json",
 		func(ctx context.Context) (iceio.IO, error) {
 			return &mockfsReadFile, nil
+		},
+		nil,
+	)
+	t.Require().NoError(err)
+	t.Require().NotNil(tbl2)
+
+	t.True(t.tbl.Metadata().Equals(tbl2.Metadata()))
+}
+
+func (t *TableTestSuite) TestNewTableFromReadFileZstd() {
+	var b bytes.Buffer
+	enc, err := zstd.NewWriter(&b)
+	t.Require().NoError(err)
+
+	_, err = enc.Write([]byte(table.ExampleTableMetadataV2))
+	t.Require().NoError(err)
+	t.Require().NoError(enc.Close())
+
+	var mockfsReadFile internal.MockFSReadFile
+	mockfsReadFile.Test(t.T())
+	mockfsReadFile.On("ReadFile", "s3://bucket/test/location/uuid.zstd.metadata.json").
+		Return(b.Bytes(), nil)
+	defer mockfsReadFile.AssertExpectations(t.T())
+
+	tbl2, err := table.NewFromLocation(
+		t.T().Context(),
+		[]string{"foo"},
+		"s3://bucket/test/location/uuid.zstd.metadata.json",
+		func(ctx context.Context) (iceio.IO, error) {
+			return &mockfsReadFile, nil
+		},
+		nil,
+	)
+	t.Require().NoError(err)
+	t.Require().NotNil(tbl2)
+
+	t.True(t.tbl.Metadata().Equals(tbl2.Metadata()))
+}
+
+func (t *TableTestSuite) TestNewTableFromReadFileZstdAlternateSuffix() {
+	var b bytes.Buffer
+	enc, err := zstd.NewWriter(&b)
+	t.Require().NoError(err)
+
+	_, err = enc.Write([]byte(table.ExampleTableMetadataV2))
+	t.Require().NoError(err)
+	t.Require().NoError(enc.Close())
+
+	var mockfsReadFile internal.MockFSReadFile
+	mockfsReadFile.Test(t.T())
+	mockfsReadFile.On("ReadFile", "s3://bucket/test/location/uuid.metadata.json.zstd").
+		Return(b.Bytes(), nil)
+	defer mockfsReadFile.AssertExpectations(t.T())
+
+	tbl2, err := table.NewFromLocation(
+		t.T().Context(),
+		[]string{"foo"},
+		"s3://bucket/test/location/uuid.metadata.json.zstd",
+		func(ctx context.Context) (iceio.IO, error) {
+			return &mockfsReadFile, nil
+		},
+		nil,
+	)
+	t.Require().NoError(err)
+	t.Require().NotNil(tbl2)
+
+	t.True(t.tbl.Metadata().Equals(tbl2.Metadata()))
+}
+
+func (t *TableTestSuite) TestNewTableFromOpenZstd() {
+	var b bytes.Buffer
+	enc, err := zstd.NewWriter(&b)
+	t.Require().NoError(err)
+
+	_, err = enc.Write([]byte(table.ExampleTableMetadataV2))
+	t.Require().NoError(err)
+	t.Require().NoError(enc.Close())
+
+	var mockfs internal.MockFS
+	mockfs.Test(t.T())
+	mockfs.On("Open", "s3://bucket/test/location/uuid.zstd.metadata.json").
+		Return(&internal.MockFile{Contents: bytes.NewReader(b.Bytes())}, nil)
+	defer mockfs.AssertExpectations(t.T())
+
+	tbl2, err := table.NewFromLocation(
+		t.T().Context(),
+		[]string{"foo"},
+		"s3://bucket/test/location/uuid.zstd.metadata.json",
+		func(ctx context.Context) (iceio.IO, error) {
+			return &mockfs, nil
+		},
+		nil,
+	)
+	t.Require().NoError(err)
+	t.Require().NotNil(tbl2)
+
+	t.True(t.tbl.Metadata().Equals(tbl2.Metadata()))
+}
+
+func (t *TableTestSuite) TestNewTableFromOpenZstdAlternateSuffix() {
+	var b bytes.Buffer
+	enc, err := zstd.NewWriter(&b)
+	t.Require().NoError(err)
+
+	_, err = enc.Write([]byte(table.ExampleTableMetadataV2))
+	t.Require().NoError(err)
+	t.Require().NoError(enc.Close())
+
+	var mockfs internal.MockFS
+	mockfs.Test(t.T())
+	mockfs.On("Open", "s3://bucket/test/location/uuid.metadata.json.zstd").
+		Return(&internal.MockFile{Contents: bytes.NewReader(b.Bytes())}, nil)
+	defer mockfs.AssertExpectations(t.T())
+
+	tbl2, err := table.NewFromLocation(
+		t.T().Context(),
+		[]string{"foo"},
+		"s3://bucket/test/location/uuid.metadata.json.zstd",
+		func(ctx context.Context) (iceio.IO, error) {
+			return &mockfs, nil
 		},
 		nil,
 	)
@@ -425,12 +546,12 @@ func (t *TableWritingTestSuite) TestAddFilesUnpartitioned() {
 			Operation: table.OpAppend,
 			Properties: iceberg.Properties{
 				"added-data-files":       "5",
-				"added-files-size":       "3600",
+				"added-files-size":       "3590",
 				"added-records":          "5",
 				"total-data-files":       "5",
 				"total-delete-files":     "0",
 				"total-equality-deletes": "0",
-				"total-files-size":       "3600",
+				"total-files-size":       "3590",
 				"total-position-deletes": "0",
 				"total-records":          "5",
 			},
@@ -646,13 +767,13 @@ func (t *TableWritingTestSuite) TestAddFilesPartitionedTable() {
 			Operation: table.OpAppend,
 			Properties: iceberg.Properties{
 				"added-data-files":        "5",
-				"added-files-size":        "3600",
+				"added-files-size":        "3590",
 				"added-records":           "5",
 				"changed-partition-count": "1",
 				"total-data-files":        "5",
 				"total-delete-files":      "0",
 				"total-equality-deletes":  "0",
-				"total-files-size":        "3600",
+				"total-files-size":        "3590",
 				"total-position-deletes":  "0",
 				"total-records":           "5",
 			},
@@ -662,10 +783,8 @@ func (t *TableWritingTestSuite) TestAddFilesPartitionedTable() {
 	t.Require().NoError(err)
 
 	for _, manifest := range m {
-		entries, err := manifest.FetchEntries(mustFS(t.T(), tbl), false)
-		t.Require().NoError(err)
-
-		for _, e := range entries {
+		for e, err := range manifest.Entries(mustFS(t.T(), tbl), false) {
+			t.Require().NoError(err)
 			t.Equal(map[int]any{
 				1000: int32(123), 1001: int32(650),
 			}, e.DataFile().Partition())
@@ -1014,15 +1133,15 @@ func (t *TableWritingTestSuite) TestReplaceDataFiles() {
 		Operation: table.OpOverwrite,
 		Properties: iceberg.Properties{
 			"added-data-files":       "1",
-			"added-files-size":       "1068",
+			"added-files-size":       "1066",
 			"added-records":          "4",
 			"deleted-data-files":     "2",
 			"deleted-records":        "4",
-			"removed-files-size":     "2136",
+			"removed-files-size":     "2132",
 			"total-data-files":       "4",
 			"total-delete-files":     "0",
 			"total-equality-deletes": "0",
-			"total-files-size":       "4272",
+			"total-files-size":       "4264",
 			"total-position-deletes": "0",
 			"total-records":          "10",
 		},
@@ -2333,8 +2452,11 @@ func (t *TableWritingTestSuite) TestMergeManifests() {
 	t.Len(manifestList, 1)
 	t.validateManifestFileLength(mustFS(t.T(), tblA), manifestList[0])
 
-	entries, err := manifestList[0].FetchEntries(mustFS(t.T(), tblA), false)
-	t.Require().NoError(err)
+	entries := make([]iceberg.ManifestEntry, 0, 3)
+	for entry, err := range manifestList[0].Entries(mustFS(t.T(), tblA), false) {
+		t.Require().NoError(err)
+		entries = append(entries, entry)
+	}
 	t.Len(entries, 3)
 
 	// entries should match the snapshot ID they were added in
@@ -3055,6 +3177,61 @@ func (t *TableTestSuite) TestMetadataCompressionRoundTrip() {
 	t.Contains(metadata, "location")
 
 	// Verify that we can load the table from the metadata location
+	tbl2, err := cat.LoadTable(context.Background(), ident)
+	t.Require().NoError(err)
+	t.Require().NotNil(tbl2)
+
+	t.True(tbl.Equals(*tbl2))
+}
+
+func (t *TableTestSuite) TestMetadataCompressionRoundTripZstd() {
+	cat, err := catalog.Load(context.Background(), "default", iceberg.Properties{
+		"uri":          ":memory:",
+		"type":         "sql",
+		sql.DriverKey:  sqliteshim.ShimName,
+		sql.DialectKey: string(sql.SQLite),
+		"warehouse":    "file://" + t.T().TempDir(),
+	})
+	t.Require().NoError(err)
+
+	ident := table.Identifier{"test", "zstd_compression_table"}
+	t.Require().NoError(cat.CreateNamespace(context.Background(), catalog.NamespaceFromIdent(ident), nil))
+
+	tbl, err := cat.CreateTable(context.Background(), ident, t.tbl.Schema(),
+		catalog.WithProperties(iceberg.Properties{
+			table.MetadataCompressionKey: "zstd",
+		}))
+	t.Require().NoError(err)
+	t.Require().NotNil(tbl)
+
+	metadataLoc := tbl.MetadataLocation()
+	t.Contains(metadataLoc, ".zstd.metadata.json")
+
+	fs, err := tbl.FS(context.Background())
+	t.Require().NoError(err)
+
+	file, err := fs.Open(metadataLoc)
+	t.Require().NoError(err)
+	defer file.Close()
+
+	metadataBytes, err := io.ReadAll(file)
+	t.Require().NoError(err)
+
+	dec, err := zstd.NewReader(bytes.NewReader(metadataBytes))
+	t.Require().NoError(err)
+	defer dec.Close()
+
+	decompressed, err := io.ReadAll(dec)
+	t.Require().NoError(err)
+
+	var metadata map[string]any
+	err = json.Unmarshal(decompressed, &metadata)
+	t.Require().NoError(err)
+
+	t.Contains(metadata, "format-version")
+	t.Contains(metadata, "table-uuid")
+	t.Contains(metadata, "location")
+
 	tbl2, err := cat.LoadTable(context.Background(), ident)
 	t.Require().NoError(err)
 	t.Require().NotNil(tbl2)
