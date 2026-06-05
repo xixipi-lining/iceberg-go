@@ -380,6 +380,10 @@ func (w *ParquetFileWriter) Close() (_ iceberg.DataFile, err error) {
 		return nil, err
 	}
 
+	if filemeta.NumRows == 0 {
+		return nil, fmt.Errorf("%w: record count must be greater than 0", iceberg.ErrInvalidArgument)
+	}
+
 	stats := w.format.DataFileStatsFromMeta(filemeta, w.info.StatsCols, w.colMapping)
 	stats.EqualityFieldIDs = w.info.EqualityFieldIDs
 

@@ -307,9 +307,8 @@ func (r *RollingDataWriter) stream(outputDataFilesCh chan<- iceberg.DataFile) {
 	defer close(r.errorCh)
 
 	var currentWriter tblutils.FileWriter
-	var streamErr error
 	defer func() {
-		if currentWriter != nil && streamErr == nil {
+		if currentWriter != nil {
 			currentWriter.Close()
 		}
 	}()
@@ -337,7 +336,6 @@ func (r *RollingDataWriter) stream(outputDataFilesCh chan<- iceberg.DataFile) {
 				r.partitionID, fileCount)
 			if err != nil {
 				record.Release()
-				streamErr = err
 				r.sendError(err)
 
 				return
@@ -348,7 +346,6 @@ func (r *RollingDataWriter) stream(outputDataFilesCh chan<- iceberg.DataFile) {
 			r.factory.taskSchema, record, SchemaOptions{IncludeFieldIDs: true, UseWriteDefault: true})
 		if err != nil {
 			record.Release()
-			streamErr = err
 			r.sendError(err)
 
 			return
@@ -358,7 +355,6 @@ func (r *RollingDataWriter) stream(outputDataFilesCh chan<- iceberg.DataFile) {
 		converted.Release()
 		record.Release()
 		if err != nil {
-			streamErr = err
 			r.sendError(err)
 
 			return
@@ -366,7 +362,6 @@ func (r *RollingDataWriter) stream(outputDataFilesCh chan<- iceberg.DataFile) {
 
 		if currentWriter.BytesWritten() >= r.factory.targetFileSize {
 			if err := closeWriter(); err != nil {
-				streamErr = err
 				r.sendError(err)
 
 				return
@@ -375,7 +370,6 @@ func (r *RollingDataWriter) stream(outputDataFilesCh chan<- iceberg.DataFile) {
 	}
 
 	if err := closeWriter(); err != nil {
-		streamErr = err
 		r.sendError(err)
 	}
 }
