@@ -254,10 +254,10 @@ func main() {
 	case args.Compact != nil && args.Compact.Analyze == nil && args.Compact.Run == nil:
 		_ = parser.WriteHelpForSubcommand(os.Stderr, "compact")
 		os.Exit(1)
-	case args.Branch != nil && args.Branch.Create == nil:
+	case args.Branch != nil && args.Branch.Create == nil && args.Branch.Delete == nil:
 		_ = parser.WriteHelpForSubcommand(os.Stderr, "branch")
 		os.Exit(1)
-	case args.Tag != nil && args.Tag.Create == nil:
+	case args.Tag != nil && args.Tag.Create == nil && args.Tag.Delete == nil:
 		_ = parser.WriteHelpForSubcommand(os.Stderr, "tag")
 		os.Exit(1)
 	}
@@ -270,6 +270,15 @@ func main() {
 		output = jsonOutput{}
 	default:
 		log.Fatal("unimplemented output type")
+	}
+
+	// Validate the rollback selector before catalog init so invalid flags fail
+	// fast with a clear message instead of a catalog connection error.
+	if args.Rollback != nil {
+		if err := validateRollbackSelector(args.Rollback); err != nil {
+			output.Error(err)
+			os.Exit(1)
+		}
 	}
 
 	cat := initCatalog(ctx, args)

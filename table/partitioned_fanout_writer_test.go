@@ -137,13 +137,10 @@ func (s *FanoutWriterTestSuite) testTransformPartition(transform iceberg.Transfo
 		},
 	}
 
-	cw := newConcurrentDataFileWriter(func(rootLocation string, fs iceio.WriteFileIO, meta *MetadataBuilder, props iceberg.Properties, opts ...dataFileWriterOption) (dataFileWriter, error) {
-		return newDataFileWriter(rootLocation, fs, meta, props, opts...)
-	})
 	rollingDataWriters, err := newWriterFactory(loc, args, metaBuilder, icebergSchema, 1024*1024)
 	s.Require().NoError(err)
 
-	partitionWriter := newPartitionedFanoutWriter(spec, cw, icebergSchema, args.itr, rollingDataWriters)
+	partitionWriter := newPartitionedFanoutWriter(spec, icebergSchema, args.itr, rollingDataWriters)
 	workers := config.EnvConfig.MaxWorkers
 
 	dataFiles := partitionWriter.Write(s.ctx, workers)
@@ -587,4 +584,28 @@ func (s *FanoutWriterTestSuite) createComprehensiveTestRecord() arrow.RecordBatc
 	}
 
 	return bldr.NewRecordBatch()
+}
+
+func (s *FanoutWriterTestSuite) TestGetArrowValueAsIcebergLiteralTime64() {
+	// time64[us]: value passes through unchanged.
+	usBldr := array.NewTime64Builder(s.mem, &arrow.Time64Type{Unit: arrow.Microsecond})
+	defer usBldr.Release()
+	usBldr.Append(arrow.Time64(5_000_000))
+	usArr := usBldr.NewTime64Array()
+	defer usArr.Release()
+
+	lit, err := getArrowValueAsIcebergLiteral(usArr, 0, iceberg.PrimitiveTypes.Time)
+	s.Require().NoError(err)
+	s.Equal(iceberg.NewLiteral(iceberg.Time(5_000_000)), lit)
+
+	// time64[ns]: explicitly rejected to avoid silently producing wrong partition keys.
+	nsBldr := array.NewTime64Builder(s.mem, &arrow.Time64Type{Unit: arrow.Nanosecond})
+	defer nsBldr.Release()
+	nsBldr.Append(arrow.Time64(5_000_000_000))
+	nsArr := nsBldr.NewTime64Array()
+	defer nsArr.Release()
+
+	_, err = getArrowValueAsIcebergLiteral(nsArr, 0, iceberg.PrimitiveTypes.Time)
+	s.Require().ErrorIs(err, iceberg.ErrInvalidSchema)
+	s.Contains(err.Error(), "time64[ns]")
 }

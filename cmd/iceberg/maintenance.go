@@ -75,7 +75,8 @@ type UpgradeCmd struct {
 
 type RollbackCmd struct {
 	TableID    string `arg:"positional,required" help:"full path to a table"`
-	SnapshotID int64  `arg:"--snapshot-id,required" help:"snapshot ID to roll back to"`
+	SnapshotID *int64 `arg:"--snapshot-id" help:"snapshot ID to roll back to (mutually exclusive with --timestamp)"`
+	Timestamp  string `arg:"--timestamp" help:"RFC3339 timestamp to roll back to; fractional seconds accepted (mutually exclusive with --snapshot-id)"`
 	Yes        bool   `arg:"--yes" help:"skip confirmation prompt"`
 }
 
@@ -89,8 +90,15 @@ type BranchCreateCmd struct {
 	Yes                bool   `arg:"--yes" help:"skip confirmation prompt"`
 }
 
+type BranchDeleteCmd struct {
+	TableID    string `arg:"positional,required" help:"full path to a table"`
+	BranchName string `arg:"positional,required" help:"branch name"`
+	Yes        bool   `arg:"--yes" help:"skip confirmation prompt"`
+}
+
 type BranchCmd struct {
 	Create *BranchCreateCmd `arg:"subcommand:create" help:"create a branch"`
+	Delete *BranchDeleteCmd `arg:"subcommand:delete" help:"delete a branch"`
 }
 
 type TagCreateCmd struct {
@@ -101,8 +109,15 @@ type TagCreateCmd struct {
 	Yes        bool   `arg:"--yes" help:"skip confirmation prompt"`
 }
 
+type TagDeleteCmd struct {
+	TableID string `arg:"positional,required" help:"full path to a table"`
+	TagName string `arg:"positional,required" help:"tag name"`
+	Yes     bool   `arg:"--yes" help:"skip confirmation prompt"`
+}
+
 type TagCmd struct {
 	Create *TagCreateCmd `arg:"subcommand:create" help:"create a tag"`
+	Delete *TagDeleteCmd `arg:"subcommand:delete" help:"delete a tag"`
 }
 
 // Result types
@@ -182,6 +197,13 @@ type RefCreatedResult struct {
 	MaxRefAgeMs        *int64 `json:"max_ref_age_ms,omitempty"`
 	MaxSnapshotAgeMs   *int64 `json:"max_snapshot_age_ms,omitempty"`
 	MinSnapshotsToKeep *int   `json:"min_snapshots_to_keep,omitempty"`
+}
+
+type RefDeletedResult struct {
+	Table      string `json:"table"`
+	RefName    string `json:"ref_name"`
+	RefType    string `json:"ref_type"`
+	SnapshotID int64  `json:"snapshot_id"`
 }
 
 // Shared helpers

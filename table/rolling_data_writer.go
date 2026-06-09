@@ -21,12 +21,14 @@ import (
 	"context"
 	"fmt"
 	"iter"
+	"maps"
 	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/apache/arrow-go/v18/arrow"
+	"github.com/apache/arrow-go/v18/arrow/compute"
 	"github.com/apache/iceberg-go"
 	iceio "github.com/apache/iceberg-go/io"
 	tblutils "github.com/apache/iceberg-go/table/internal"
@@ -45,6 +47,7 @@ type writerFactory struct {
 	targetFileSize int64
 
 	locProvider      LocationProvider
+	tableProps       iceberg.Properties
 	fileSchema       *iceberg.Schema
 	arrowSchema      *arrow.Schema
 	writeProps       any
@@ -55,6 +58,7 @@ type writerFactory struct {
 	content          iceberg.ManifestEntryContent
 	equalityFieldIDs []int
 	sortOrderID      int
+	sortKeys         []compute.SortKey
 
 	writers               sync.Map
 	partitionLocProviders sync.Map
@@ -152,6 +156,7 @@ func newWriterFactory(rootLocation string, args recordWritingArgs, meta *Metadat
 		taskSchema:     taskSchema,
 		targetFileSize: targetFileSize,
 		locProvider:    locProvider,
+		tableProps:     meta.props,
 		fileSchema:     fileSchema,
 		arrowSchema:    arrowSchema,
 		writeProps:     format.GetWriteProperties(meta.props),
@@ -171,6 +176,21 @@ func newWriterFactory(rootLocation string, args recordWritingArgs, meta *Metadat
 		stopCount()
 
 		return nil, err
+	}
+
+	if f.content == iceberg.EntryContentData && f.sortOrderID != UnsortedSortOrderID {
+		sortOrder, err := meta.GetSortOrderByID(f.sortOrderID)
+		if err != nil {
+			stopCount()
+
+			return nil, err
+		}
+		f.sortKeys, err = resolveSortKeys(*sortOrder, f.fileSchema)
+		if err != nil {
+			stopCount()
+
+			return nil, err
+		}
 	}
 
 	return f, nil
@@ -219,8 +239,10 @@ func (w *writerFactory) partitionLocProvider(partitionPath string) (LocationProv
 	}
 
 	partitionDataPath := w.rootURL.JoinPath("data", partitionPath).String()
-	loc, err := LoadLocationProvider(w.rootLocation,
-		iceberg.Properties{WriteDataPathKey: partitionDataPath})
+	partitionProps := make(iceberg.Properties, len(w.tableProps)+1)
+	maps.Copy(partitionProps, w.tableProps)
+	partitionProps[WriteDataPathKey] = partitionDataPath
+	loc, err := LoadLocationProvider(w.rootLocation, partitionProps)
 	if err != nil {
 		return nil, err
 	}
@@ -233,32 +255,30 @@ func (w *writerFactory) partitionLocProvider(partitionPath string) (LocationProv
 // RollingDataWriter writes Arrow records for a specific partition, rolling to
 // new data files when the actual compressed file size reaches the target.
 type RollingDataWriter struct {
-	partitionKey     string
-	partitionID      int
-	fileCount        atomic.Int64
-	recordCh         chan arrow.RecordBatch
-	errorCh          chan error
-	factory          *writerFactory
-	partitionValues  map[int]any
-	ctx              context.Context
-	cancel           context.CancelFunc
-	wg               sync.WaitGroup
-	concurrentWriter *concurrentDataFileWriter
+	partitionKey    string
+	partitionID     int
+	fileCount       atomic.Int64
+	recordCh        chan arrow.RecordBatch
+	errorCh         chan error
+	factory         *writerFactory
+	partitionValues map[int]any
+	ctx             context.Context
+	cancel          context.CancelFunc
+	wg              sync.WaitGroup
 }
 
-func (w *writerFactory) newRollingDataWriter(ctx context.Context, concurrentWriter *concurrentDataFileWriter, partition string, partitionValues map[int]any, outputDataFilesCh chan<- iceberg.DataFile) *RollingDataWriter {
+func (w *writerFactory) newRollingDataWriter(ctx context.Context, partition string, partitionValues map[int]any, outputDataFilesCh chan<- iceberg.DataFile) *RollingDataWriter {
 	ctx, cancel := context.WithCancel(ctx)
 	partitionID := int(w.partitionIDCounter.Add(1) - 1)
 	writer := &RollingDataWriter{
-		partitionKey:     partition,
-		partitionID:      partitionID,
-		recordCh:         make(chan arrow.RecordBatch, 64),
-		errorCh:          make(chan error, 1),
-		factory:          w,
-		partitionValues:  partitionValues,
-		ctx:              ctx,
-		concurrentWriter: concurrentWriter,
-		cancel:           cancel,
+		partitionKey:    partition,
+		partitionID:     partitionID,
+		recordCh:        make(chan arrow.RecordBatch, 64),
+		errorCh:         make(chan error, 1),
+		factory:         w,
+		partitionValues: partitionValues,
+		ctx:             ctx,
+		cancel:          cancel,
 	}
 
 	writer.wg.Add(1)
@@ -267,7 +287,7 @@ func (w *writerFactory) newRollingDataWriter(ctx context.Context, concurrentWrit
 	return writer
 }
 
-func (w *writerFactory) getOrCreateRollingDataWriter(ctx context.Context, concurrentWriter *concurrentDataFileWriter, partition string, partitionValues map[int]any, outputDataFilesCh chan<- iceberg.DataFile) (*RollingDataWriter, error) {
+func (w *writerFactory) getOrCreateRollingDataWriter(ctx context.Context, partition string, partitionValues map[int]any, outputDataFilesCh chan<- iceberg.DataFile) (*RollingDataWriter, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -279,7 +299,7 @@ func (w *writerFactory) getOrCreateRollingDataWriter(ctx context.Context, concur
 		return nil, fmt.Errorf("invalid writer type for partition: %s", partition)
 	}
 
-	writer := w.newRollingDataWriter(ctx, concurrentWriter, partition, partitionValues, outputDataFilesCh)
+	writer := w.newRollingDataWriter(ctx, partition, partitionValues, outputDataFilesCh)
 	w.writers.Store(partition, writer)
 
 	return writer, nil
@@ -353,6 +373,21 @@ func (r *RollingDataWriter) stream(outputDataFilesCh chan<- iceberg.DataFile) {
 			r.sendError(err)
 
 			return
+		}
+
+		// Sort each batch independently before writing. This is per-batch, not
+		// per-file: rows are not merged into one globally sorted run across
+		// batches. See resolveSortKeys for the full list of limitations.
+		if len(r.factory.sortKeys) > 0 {
+			sorted, err := compute.SortRecordBatch(r.ctx, converted, r.factory.sortKeys)
+			converted.Release()
+			if err != nil {
+				record.Release()
+				r.sendError(err)
+
+				return
+			}
+			converted = sorted
 		}
 
 		err = currentWriter.Write(converted)
