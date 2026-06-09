@@ -15,7 +15,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 
@@ -182,17 +181,7 @@ func (c *Catalog) CreateTableInTx(ctx context.Context, ident table.Identifier, s
 			return fmt.Errorf("%w: %s", catalog.ErrNoSuchNamespace, ns)
 		}
 
-		afs, err := staged.FS(ctx)
-		if err != nil {
-			return err
-		}
-		wfs, ok := afs.(io.WriteFileIO)
-		if !ok {
-			return errors.New("loaded filesystem IO does not support writing")
-		}
-
-		compression := staged.Table.Properties().Get(table.MetadataCompressionKey, table.MetadataCompressionDefault)
-		if err := internal.WriteTableMetadata(staged.Metadata(), wfs, staged.MetadataLocation(), compression); err != nil {
+		if err := internal.WriteMetadata(ctx, staged.Table); err != nil {
 			return err
 		}
 
@@ -234,9 +223,7 @@ func (c *Catalog) CommitTableInTx(ctx context.Context, ident table.Identifier, r
 			return nil
 		}
 
-		ioProps := maps.Clone(c.props)
-		maps.Copy(ioProps, staged.Properties())
-		if err := internal.WriteMetadata(ctx, staged.Metadata(), staged.MetadataLocation(), ioProps); err != nil {
+		if err := internal.WriteMetadata(ctx, staged.Table); err != nil {
 			return err
 		}
 
@@ -339,9 +326,7 @@ func (c *Catalog) CommitTransactionInTx(ctx context.Context, commits []table.Tab
 			}
 
 			// Write the metadata file.
-			ioProps := maps.Clone(c.props)
-			maps.Copy(ioProps, staged.Properties())
-			if err := internal.WriteMetadata(ctx, staged.Metadata(), staged.MetadataLocation(), ioProps); err != nil {
+			if err := internal.WriteMetadata(ctx, staged.Table); err != nil {
 				return err
 			}
 
