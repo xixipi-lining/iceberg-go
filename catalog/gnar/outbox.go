@@ -101,6 +101,7 @@ func listOutboxMessages(ctx context.Context, tx bun.Tx, catalogName string, limi
 	err := tx.NewSelect().Model(&outboxMessages).
 		Where("catalog_name = ?", catalogName).
 		Where("status = ?", OutboxMessageStatusPending).
+		Order("id ASC").
 		Limit(limit).
 		Scan(ctx)
 	return outboxMessages, err
