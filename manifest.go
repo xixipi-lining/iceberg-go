@@ -626,8 +626,12 @@ func NewManifestReader(file ManifestFile, in io.Reader) (*ManifestReader, error)
 			return nil, fmt.Errorf("manifest file's 'format-version' metadata is invalid: %w", err)
 		}
 	}
-	if formatVersion != file.Version() {
-		return nil, fmt.Errorf("manifest file's 'format-version' metadata indicates version %d, but entry from manifest list indicates version %d",
+	// The manifest's own metadata is authoritative for its version. A v2/v3
+	// manifest list may reference older manifests so a table can be upgraded
+	// in place without rewriting history; only a manifest newer than the list
+	// referencing it indicates corruption.
+	if formatVersion > file.Version() {
+		return nil, fmt.Errorf("manifest file's 'format-version' metadata indicates version %d, which is newer than the v%d manifest list referencing it",
 			formatVersion, file.Version())
 	}
 
@@ -1848,6 +1852,10 @@ func (d *dataFile) initColumnStatsData() {
 }
 
 func (d *dataFile) convertAvroValueToIcebergType(v any, fieldID int) any {
+	if v == nil {
+		return nil
+	}
+
 	if logicalType, ok := d.fieldIDToLogicalType[fieldID]; ok {
 		// twmb/avro returns rich Go types (time.Time, time.Duration,
 		// *big.Rat, [16]byte) when the file schema includes a logicalType,

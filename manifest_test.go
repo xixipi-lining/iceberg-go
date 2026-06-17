@@ -1800,6 +1800,72 @@ func (m *ManifestTestSuite) TestManifestWriterMeta() {
 	m.Equal("[]", string(md["partition-spec"]))
 }
 
+func TestReadManifestDecodesNilLogicalPartitionValueFromNullableUnion(t *testing.T) {
+	schema := NewSchema(0,
+		NestedField{ID: 1, Name: "dt", Type: PrimitiveTypes.Date},
+	)
+	partitionSpec := NewPartitionSpecID(1,
+		PartitionField{FieldID: 1000, SourceIDs: []int{1}, Name: "dt", Transform: IdentityTransform{}},
+	)
+
+	dataFileBuilder, err := NewDataFileBuilder(
+		partitionSpec,
+		EntryContentEqDeletes,
+		"s3://bucket/ns/table/data/eq-delete.parquet",
+		ParquetFile,
+		map[int]any{1000: nil},
+		nil,
+		nil,
+		1,
+		1024,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dataFileBuilder.EqualityFieldIDs([]int{1})
+
+	snapshotID := int64(1234)
+	seqNum := int64(1)
+	entry := NewManifestEntry(
+		EntryStatusADDED,
+		&snapshotID,
+		&seqNum,
+		&seqNum,
+		dataFileBuilder.Build(),
+	)
+
+	var buf bytes.Buffer
+	cnt := &internal.CountingWriter{W: &buf}
+	writer, err := NewManifestWriter(2, cnt, partitionSpec, schema, snapshotID,
+		WithManifestWriterContent(ManifestContentDeletes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Add(entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	file, err := writer.ToManifestFile("s3://bucket/ns/table/metadata/eq-delete-manifest.avro", cnt.Count,
+		WithManifestFileContent(ManifestContentDeletes))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := ReadManifest(file, bytes.NewReader(buf.Bytes()), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("ReadManifest returned %d entries, want 1", len(entries))
+	}
+
+	if got := entries[0].DataFile().Partition()[1000]; got != nil {
+		t.Fatalf("Partition()[1000] = %v, want nil", got)
+	}
+}
+
 func TestManifests(t *testing.T) {
 	suite.Run(t, new(ManifestTestSuite))
 }
@@ -2105,6 +2171,46 @@ func (m *ManifestTestSuite) TestV2ManifestListRejectsV3Manifests() {
 	m.Require().Error(err)
 	m.Require().ErrorIs(err, ErrInvalidArgument)
 	m.Require().ErrorContains(err, "manifest list v2 cannot reference v3 manifest files")
+}
+
+// TestReadV1ManifestFromV2List verifies that a v1-written manifest referenced
+// from a v2 manifest list (the in-place v1->v2 upgrade case) can still be read.
+// ReadManifestList stamps every entry with the list's version, so the v1
+// manifest's entry reports Version()==2; NewManifestReader must trust the
+// manifest's own format-version metadata rather than reject the mismatch.
+func (m *ManifestTestSuite) TestReadV1ManifestFromV2List() {
+	partitionSpec := NewPartitionSpecID(1,
+		PartitionField{FieldID: 1000, SourceIDs: []int{1}, Name: "VendorID", Transform: IdentityTransform{}},
+		PartitionField{FieldID: 1001, SourceIDs: []int{2}, Name: "tpep_pickup_datetime", Transform: IdentityTransform{}})
+
+	entries := make([]ManifestEntry, len(manifestEntryV1Records))
+	for i, rec := range manifestEntryV1Records {
+		entries[i] = rec
+	}
+
+	var manifestBuf bytes.Buffer
+	mf, err := WriteManifest("v1-before-upgrade.avro", &manifestBuf, 1, partitionSpec, testSchema, entrySnapshotID, entries)
+	m.Require().NoError(err)
+	manifestBytes := manifestBuf.Bytes()
+
+	seqNum := int64(5)
+	var listBuf bytes.Buffer
+	err = WriteManifestList(2, &listBuf, entrySnapshotID, nil, &seqNum, 0, []ManifestFile{mf})
+	m.Require().NoError(err)
+
+	list, err := ReadManifestList(&listBuf)
+	m.Require().NoError(err)
+	m.Require().Len(list, 1)
+	m.Equal(2, list[0].Version(), "v2 list stamps its entries with the list version")
+
+	reader, err := NewManifestReader(list[0], bytes.NewReader(manifestBytes))
+	m.Require().NoError(err)
+	m.Equal(1, reader.Version(), "manifest's own format-version metadata is authoritative")
+
+	got, err := ReadManifest(list[0], bytes.NewReader(manifestBytes), false)
+	m.Require().NoError(err)
+	m.Require().Len(got, len(entries))
+	m.NoError(reader.Close())
 }
 
 // TestManifestRoundTripSortOrderID verifies that a sort_order_id written onto

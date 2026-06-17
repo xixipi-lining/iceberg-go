@@ -94,6 +94,8 @@ make integration-setup-spark4
 
 The exported env vars and `make integration-test` invocation are identical to the Spark 3.5 flow above.
 
+Tests requiring Spark 4 (currently the variant and unknown-type tests) automatically skip on the Spark 3.5 setup.
+
 ## Feature Support / Roadmap
 
 ### FileSystem Support
@@ -157,13 +159,13 @@ the table, the following tracks the current write support:
 |:---------------------|:---------:|
 | Append Stream        |     X     |
 | Append Data Files    |     X     |
-| Rewrite Files        |           |
+| Rewrite Files        |     X     |
 | Rewrite manifests    |           |
 | Overwrite Files      |     X     |
 | Copy-On-Write Delete |     X     |
 | Write Pos Delete     |     X     |
-| Write Eq Delete      |           |
-| Row Delta            |           |
+| Write Eq Delete      |     X     |
+| Row Delta            |     X     |
 
 
 ### CLI Usage
