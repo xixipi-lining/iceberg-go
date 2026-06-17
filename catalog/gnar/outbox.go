@@ -54,8 +54,8 @@ type sqlIcebergOutboxMessage struct {
 	bun.BaseModel `bun:"table:iceberg_outbox_messages"`
 
 	Id        int64     `bun:",pk,autoincrement"`
-	CreatedAt time.Time `bun:"created_at,nullzero,notnull,default:current_timestamp"`
-	UpdatedAt time.Time `bun:"updated_at,nullzero,notnull,default:current_timestamp"`
+	CreatedAt time.Time `bun:"created_at,nullzero,notnull"`
+	UpdatedAt time.Time `bun:"updated_at,nullzero,notnull"`
 	Status    OutboxMessageStatus
 
 	CatalogName    string
@@ -78,7 +78,10 @@ func insertOutboxMessage(ctx context.Context, tx bun.Tx, catalogName, tableNames
 		}
 	}
 
+	now := time.Now().UTC()
 	_, err := tx.NewInsert().Model(&sqlIcebergOutboxMessage{
+		CreatedAt:      now,
+		UpdatedAt:      now,
 		Status:         OutboxMessageStatusPending,
 		CatalogName:    catalogName,
 		TableNamespace: tableNamespace,
@@ -108,6 +111,7 @@ func markOutboxMessageAsDone(ctx context.Context, tx bun.Tx, catalogName string,
 		Where("catalog_name = ?", catalogName).
 		Where("id = ?", id).
 		Set("status = ?", OutboxMessageStatusDone).
+		Set("updated_at = ?", time.Now().UTC()).
 		Exec(ctx)
 
 	n, err := res.RowsAffected()
