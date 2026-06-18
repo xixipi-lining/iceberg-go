@@ -382,7 +382,7 @@ func (c *Catalog) CommitTable(ctx context.Context, ident table.Identifier, reqs 
 			}
 
 			return insertOutboxMessage(ctx, tx, c.name, strings.Join(ns, "."), tblName, OutboxMessageTypeCommitTable, &OutboxMessageData{
-				PreviousMetadataLocation: "",
+				PreviousMetadataLocation: current.MetadataLocation(),
 				MetadataLocation:         staged.MetadataLocation(),
 			})
 		}
@@ -399,7 +399,7 @@ func (c *Catalog) CommitTable(ctx context.Context, ident table.Identifier, reqs 
 		}
 
 		return insertOutboxMessage(ctx, tx, c.name, strings.Join(ns, "."), tblName, OutboxMessageTypeCreateTable, &OutboxMessageData{
-			PreviousMetadataLocation: current.MetadataLocation(),
+			PreviousMetadataLocation: "",
 			MetadataLocation:         staged.MetadataLocation(),
 		})
 	})
